@@ -1,0 +1,1013 @@
+import React, { useState, useMemo, useCallback, useRef } from "react";
+import * as XLSX from "xlsx";
+import { Upload, ChevronRight, Search, X, Building2, User, MapPin, Phone, Home, ArrowLeft } from "lucide-react";
+
+// ---------- Design tokens ----------
+const COLORS = {
+  ink: "#14213D",
+  canvas: "#F7F5F0",
+  amber: "#C8742C",
+  slate: "#5C6470",
+  forest: "#3A7D5C",
+  hairline: "#DDD7CC",
+  white: "#FFFFFF",
+};
+
+// ---------- Data processing ----------
+function buildHierarchy(branchRows, seniorRows) {
+  // seniorRows: Name -> Reporting Mgr (used to confirm/override links, not required for tree to work)
+  const seniorMap = new Map();
+  seniorRows.forEach((r) => {
+    const name = (r["Name"] || r["Name "] || "").toString().trim();
+    const mgr = (r["Reporting Mgr"] || "").toString().trim();
+    if (name) seniorMap.set(name, mgr);
+  });
+
+  // find the top node: someone who appears as Reporting Mgr for Unit Heads but has no one above them
+  // Heuristic: the most common "Reporting Mgr" value among people who are themselves Unit Heads
+  const unitHeadNames = new Set(
+    branchRows.map((r) => (r["Unit Head"] || "").toString().trim()).filter(Boolean)
+  );
+  let topCounts = new Map();
+  seniorRows.forEach((r) => {
+    const name = (r["Name"] || r["Name "] || "").toString().trim();
+    const mgr = (r["Reporting Mgr"] || "").toString().trim();
+    if (unitHeadNames.has(name) && mgr) {
+      topCounts.set(mgr, (topCounts.get(mgr) || 0) + 1);
+    }
+  });
+  let topName = "Top";
+  let topCount = 0;
+  topCounts.forEach((v, k) => {
+    if (v > topCount) {
+      topCount = v;
+      topName = k;
+    }
+  });
+
+  // Build tree: top -> unitHead -> manager -> (branchManager or direct) -> branches[]
+  const root = { name: topName, level: 0, children: new Map(), branchCount: 0, type: "top" };
+
+  branchRows.forEach((row) => {
+    const uh = (row["Unit Head"] || "").toString().trim() || "Unassigned";
+    const mgr = (row["Manager"] || "").toString().trim() || "Unassigned";
+    const bm = (row["Branch Manager Name"] || "").toString().trim() || mgr;
+
+    if (!root.children.has(uh)) {
+      root.children.set(uh, {
+        name: uh,
+        level: 1,
+        type: "unitHead",
+        children: new Map(),
+        branchCount: 0,
+      });
+    }
+    const uhNode = root.children.get(uh);
+    uhNode.branchCount++;
+    root.branchCount++;
+
+    if (!uhNode.children.has(mgr)) {
+      uhNode.children.set(mgr, {
+        name: mgr,
+        level: 2,
+        type: "manager",
+        children: new Map(),
+        branchCount: 0,
+        reportsTo: seniorMap.get(mgr) || uh,
+      });
+    }
+    const mgrNode = uhNode.children.get(mgr);
+    mgrNode.branchCount++;
+
+    const sameBM = bm === mgr;
+    const bmKey = sameBM ? "__self__" : bm;
+
+    if (!mgrNode.children.has(bmKey)) {
+      mgrNode.children.set(bmKey, {
+        name: sameBM ? mgr : bm,
+        level: 3,
+        type: "branchManager",
+        children: [],
+        branchCount: 0,
+        selfManaged: sameBM,
+      });
+    }
+    const bmNode = mgrNode.children.get(bmKey);
+    bmNode.branchCount++;
+    bmNode.children.push({
+      level: 4,
+      type: "branch",
+      name: row["Location"] || row["City"] || "Branch",
+      city: row["City"] || "",
+      state: row["State"] || "",
+      location: row["Location"] || "",
+      address: row["Address"] || "",
+      contact: row["BM Contact No"] || "",
+      bmName: bm,
+      managerName: mgr,
+      unitHeadName: uh,
+    });
+  });
+
+  return root;
+}
+
+function mapToSortedArray(map) {
+  return Array.from(map.values()).sort((a, b) => b.branchCount - a.branchCount);
+}
+
+// ---------- Small UI atoms ----------
+function CountBadge({ n, tone = "ink" }) {
+  const bg = tone === "amber" ? COLORS.amber : tone === "forest" ? COLORS.forest : COLORS.ink;
+  return (
+    <span
+      style={{
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        fontSize: 12,
+        fontWeight: 600,
+        background: bg,
+        color: "#fff",
+        borderRadius: 5,
+        padding: "2px 7px",
+        letterSpacing: 0.2,
+        minWidth: 28,
+        textAlign: "center",
+        display: "inline-block",
+      }}
+    >
+      {n}
+    </span>
+  );
+}
+
+function NodeIcon({ type, size = 16 }) {
+  const stroke = COLORS.ink;
+  if (type === "top") return <Building2 size={size} color={stroke} strokeWidth={2} />;
+  if (type === "unitHead") return <User size={size} color={stroke} strokeWidth={2} />;
+  if (type === "manager") return <User size={size} color={COLORS.slate} strokeWidth={2} />;
+  if (type === "branchManager") return <User size={size} color={COLORS.slate} strokeWidth={2} />;
+  return <MapPin size={size} color={COLORS.amber} strokeWidth={2} />;
+}
+
+// ---------- Tree column (drill-down level) ----------
+function LevelColumn({ title, items, onSelect, selectedName, emptyLabel, levelLabel }) {
+  return (
+    <div
+      style={{
+        minWidth: 260,
+        maxWidth: 300,
+        flex: "0 0 280px",
+        borderRight: `1px solid ${COLORS.hairline}`,
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+      }}
+    >
+      <div
+        style={{
+          padding: "10px 14px",
+          borderBottom: `1px solid ${COLORS.hairline}`,
+          background: "#FBFAF7",
+          flexShrink: 0,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: COLORS.slate,
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          }}
+        >
+          {levelLabel}
+        </div>
+        <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.ink, marginTop: 2 }}>{title}</div>
+      </div>
+      <div style={{ overflowY: "auto", flex: 1 }}>
+        {items.length === 0 ? (
+          <div style={{ padding: 20, fontSize: 13, color: COLORS.slate, fontStyle: "italic" }}>
+            {emptyLabel || "Nothing here"}
+          </div>
+        ) : (
+          items.map((item) => {
+            const isSelected = item.name === selectedName;
+            return (
+              <button
+                key={item.name + item.type}
+                onClick={() => onSelect(item)}
+                style={{
+                  width: "100%",
+                  textAlign: "left",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "10px 14px",
+                  border: "none",
+                  borderBottom: `1px solid ${COLORS.hairline}`,
+                  background: isSelected ? "#FFF4E9" : "transparent",
+                  borderLeft: isSelected ? `3px solid ${COLORS.amber}` : "3px solid transparent",
+                  cursor: "pointer",
+                  transition: "background 0.12s ease",
+                }}
+                onMouseEnter={(e) => {
+                  if (!isSelected) e.currentTarget.style.background = "#F2F0E9";
+                }}
+                onMouseLeave={(e) => {
+                  if (!isSelected) e.currentTarget.style.background = "transparent";
+                }}
+              >
+                <NodeIcon type={item.type} size={15} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: 13.5,
+                      fontWeight: isSelected ? 700 : 500,
+                      color: COLORS.ink,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {item.name}
+                  </div>
+                  {item.selfManaged && (
+                    <div style={{ fontSize: 10.5, color: COLORS.slate, marginTop: 1 }}>self-managed branch</div>
+                  )}
+                </div>
+                <CountBadge n={item.branchCount} tone={isSelected ? "amber" : "ink"} />
+                {item.type !== "branchManager" && (
+                  <ChevronRight size={14} color={COLORS.slate} style={{ flexShrink: 0 }} />
+                )}
+              </button>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Branch leaf list (final column) ----------
+function BranchColumn({ branches, onSelectBranch }) {
+  return (
+    <div
+      style={{
+        minWidth: 280,
+        flex: "0 0 320px",
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+      }}
+    >
+      <div
+        style={{
+          padding: "10px 14px",
+          borderBottom: `1px solid ${COLORS.hairline}`,
+          background: "#FBFAF7",
+          flexShrink: 0,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: COLORS.slate,
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          }}
+        >
+          Level 4 — Branches
+        </div>
+        <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.ink, marginTop: 2 }}>
+          {branches.length} location{branches.length !== 1 ? "s" : ""}
+        </div>
+      </div>
+      <div style={{ overflowY: "auto", flex: 1 }}>
+        {branches.map((b, i) => (
+          <button
+            key={i}
+            onClick={() => onSelectBranch(b)}
+            style={{
+              width: "100%",
+              textAlign: "left",
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 10,
+              padding: "10px 14px",
+              border: "none",
+              borderBottom: `1px solid ${COLORS.hairline}`,
+              background: "transparent",
+              cursor: "pointer",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "#F2F0E9")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+          >
+            <MapPin size={15} color={COLORS.amber} strokeWidth={2} style={{ marginTop: 2, flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.ink }}>{b.location || b.city}</div>
+              <div style={{ fontSize: 11.5, color: COLORS.slate, marginTop: 1 }}>
+                {b.city}{b.city && b.state ? ", " : ""}{b.state}
+              </div>
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Detail slide-over ----------
+function DetailPanel({ branch, onClose }) {
+  if (!branch) return null;
+  const rows = [
+    { label: "City", value: branch.city, icon: MapPin },
+    { label: "State", value: branch.state, icon: MapPin },
+    { label: "Location", value: branch.location, icon: Building2 },
+    { label: "Address", value: branch.address, icon: Home },
+    { label: "BM Contact No", value: branch.contact, icon: Phone, mono: true },
+  ];
+  return (
+    <div
+      style={{
+        position: "fixed",
+        top: 0,
+        right: 0,
+        height: "100%",
+        width: 360,
+        background: COLORS.white,
+        borderLeft: `1px solid ${COLORS.hairline}`,
+        boxShadow: "-8px 0 24px rgba(20,33,61,0.08)",
+        zIndex: 50,
+        display: "flex",
+        flexDirection: "column",
+        animation: "slideIn 0.18s ease-out",
+      }}
+    >
+      <style>{`@keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }`}</style>
+      <div
+        style={{
+          padding: "16px 20px",
+          borderBottom: `1px solid ${COLORS.hairline}`,
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          background: COLORS.ink,
+        }}
+      >
+        <div>
+          <div
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "#C8B8A0",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            }}
+          >
+            Branch detail
+          </div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#fff", marginTop: 4 }}>
+            {branch.location || branch.city}
+          </div>
+        </div>
+        <button
+          onClick={onClose}
+          style={{
+            background: "rgba(255,255,255,0.12)",
+            border: "none",
+            borderRadius: 6,
+            padding: 6,
+            cursor: "pointer",
+            display: "flex",
+          }}
+        >
+          <X size={16} color="#fff" />
+        </button>
+      </div>
+
+      <div style={{ padding: 20, overflowY: "auto", flex: 1 }}>
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+            Reporting chain
+          </div>
+          {[
+            { label: branch.unitHeadName, sub: "Unit Head" },
+            { label: branch.managerName, sub: "Manager" },
+            { label: branch.bmName, sub: "Branch Manager" },
+          ].map((step, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: i < 2 ? 4 : 0 }}>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: COLORS.amber, flexShrink: 0 }} />
+              <div style={{ fontSize: 13, color: COLORS.ink, fontWeight: 600 }}>{step.label}</div>
+              <div style={{ fontSize: 10.5, color: COLORS.slate, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+                {step.sub}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ height: 1, background: COLORS.hairline, margin: "16px 0" }} />
+
+        {rows.map((r, i) => (
+          <div key={i} style={{ marginBottom: 16 }}>
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                color: COLORS.slate,
+                textTransform: "uppercase",
+                letterSpacing: "0.06em",
+                marginBottom: 4,
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+              }}
+            >
+              <r.icon size={11} />
+              {r.label}
+            </div>
+            <div
+              style={{
+                fontSize: 14,
+                color: COLORS.ink,
+                fontFamily: r.mono ? "ui-monospace, SFMono-Regular, Menlo, monospace" : "inherit",
+                fontWeight: r.mono ? 600 : 400,
+              }}
+            >
+              {r.value || "—"}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Breadcrumb ----------
+function Breadcrumb({ path, onJump }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "10px 20px",
+        borderBottom: `1px solid ${COLORS.hairline}`,
+        background: COLORS.white,
+        flexWrap: "wrap",
+        flexShrink: 0,
+      }}
+    >
+      {path.map((p, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && <ChevronRight size={13} color={COLORS.slate} />}
+          <button
+            onClick={() => onJump(i)}
+            style={{
+              border: "none",
+              background: i === path.length - 1 ? "#FFF4E9" : "transparent",
+              color: i === path.length - 1 ? COLORS.amber : COLORS.slate,
+              fontWeight: i === path.length - 1 ? 700 : 500,
+              fontSize: 13,
+              padding: "4px 9px",
+              borderRadius: 5,
+              cursor: i === path.length - 1 ? "default" : "pointer",
+            }}
+          >
+            {p}
+          </button>
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
+// ---------- Search ----------
+function useSearchResults(root, query) {
+  return useMemo(() => {
+    if (!query || query.trim().length < 2 || !root) return [];
+    const q = query.trim().toLowerCase();
+    const results = [];
+    root.children.forEach((uh) => {
+      if (uh.name.toLowerCase().includes(q)) results.push({ kind: "Unit Head", name: uh.name, path: [root.name, uh.name] });
+      uh.children.forEach((mgr) => {
+        if (mgr.name.toLowerCase().includes(q)) results.push({ kind: "Manager", name: mgr.name, path: [root.name, uh.name, mgr.name] });
+        mgr.children.forEach((bm) => {
+          if (bm.name.toLowerCase().includes(q) && !bm.selfManaged)
+            results.push({ kind: "Branch Manager", name: bm.name, path: [root.name, uh.name, mgr.name, bm.name] });
+          bm.children.forEach((branch) => {
+            const hay = `${branch.location} ${branch.city} ${branch.state}`.toLowerCase();
+            if (hay.includes(q))
+              results.push({
+                kind: "Branch",
+                name: branch.location || branch.city,
+                path: [root.name, uh.name, mgr.name, bm.selfManaged ? mgr.name : bm.name],
+                branch,
+              });
+          });
+        });
+      });
+    });
+    return results.slice(0, 30);
+  }, [root, query]);
+}
+
+// ---------- Upload screen ----------
+function UploadScreen({ onFile, error, loading }) {
+  const inputRef = useRef(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  return (
+    <div
+      style={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        background: COLORS.canvas,
+        padding: 20,
+      }}
+    >
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          if (e.dataTransfer.files?.[0]) onFile(e.dataTransfer.files[0]);
+        }}
+        style={{
+          width: "100%",
+          maxWidth: 480,
+          border: `2px dashed ${dragOver ? COLORS.amber : COLORS.hairline}`,
+          borderRadius: 14,
+          background: COLORS.white,
+          padding: "48px 32px",
+          textAlign: "center",
+          transition: "border-color 0.15s ease",
+        }}
+      >
+        <div
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: 14,
+            background: COLORS.ink,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            margin: "0 auto 18px",
+          }}
+        >
+          <Upload size={24} color="#fff" />
+        </div>
+        <div style={{ fontSize: 18, fontWeight: 700, color: COLORS.ink, marginBottom: 6 }}>
+          {loading ? "Reading your file…" : "Upload the branch network file"}
+        </div>
+        <div style={{ fontSize: 13.5, color: COLORS.slate, marginBottom: 22, lineHeight: 1.5 }}>
+          Drop an .xlsx with a <strong>Branch List</strong> sheet (City, State, Location, Unit Head, Manager,
+          Branch Manager Name, BM Contact No, Address) and a <strong>Seniors</strong> sheet (Sr No, Name, Reporting
+          Mgr, Number, Location).
+        </div>
+        <button
+          onClick={() => inputRef.current?.click()}
+          disabled={loading}
+          style={{
+            background: COLORS.amber,
+            color: "#fff",
+            border: "none",
+            borderRadius: 8,
+            padding: "10px 22px",
+            fontSize: 14,
+            fontWeight: 700,
+            cursor: loading ? "default" : "pointer",
+            opacity: loading ? 0.6 : 1,
+          }}
+        >
+          {loading ? "Processing…" : "Choose file"}
+        </button>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".xlsx,.xls"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            if (e.target.files?.[0]) onFile(e.target.files[0]);
+          }}
+        />
+        {error && (
+          <div style={{ marginTop: 16, fontSize: 12.5, color: "#B23B3B", background: "#FBEAEA", padding: "8px 12px", borderRadius: 6 }}>
+            {error}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Main App ----------
+export default function BranchHierarchyDashboard() {
+  const [root, setRoot] = useState(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [meta, setMeta] = useState({ branches: 0, seniors: 0 });
+
+  const [selectedUH, setSelectedUH] = useState(null);
+  const [selectedMgr, setSelectedMgr] = useState(null);
+  const [selectedBM, setSelectedBM] = useState(null);
+  const [selectedBranch, setSelectedBranch] = useState(null);
+  const [query, setQuery] = useState("");
+  const [showSearch, setShowSearch] = useState(false);
+
+  const handleFile = useCallback((file) => {
+    setLoading(true);
+    setError("");
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target.result);
+        const wb = XLSX.read(data, { type: "array" });
+
+        const branchSheetName =
+          wb.SheetNames.find((n) => /branch/i.test(n)) || wb.SheetNames[0];
+        const seniorSheetName =
+          wb.SheetNames.find((n) => /senior/i.test(n)) || wb.SheetNames[1] || wb.SheetNames[0];
+
+        const branchRows = XLSX.utils.sheet_to_json(wb.Sheets[branchSheetName], { defval: "" });
+        const seniorRows = XLSX.utils.sheet_to_json(wb.Sheets[seniorSheetName], { defval: "" });
+
+        if (!branchRows.length) {
+          setError("Couldn't find any rows in the Branch List sheet. Check the file and try again.");
+          setLoading(false);
+          return;
+        }
+
+        const tree = buildHierarchy(branchRows, seniorRows);
+        setRoot(tree);
+        setMeta({ branches: branchRows.length, seniors: seniorRows.length });
+        setSelectedUH(null);
+        setSelectedMgr(null);
+        setSelectedBM(null);
+        setSelectedBranch(null);
+      } catch (err) {
+        setError("Couldn't read that file. Make sure it's a valid .xlsx with the expected sheets.");
+      }
+      setLoading(false);
+    };
+    reader.onerror = () => {
+      setError("Couldn't read that file. Please try again.");
+      setLoading(false);
+    };
+    reader.readAsArrayBuffer(file);
+  }, []);
+
+  const unitHeads = useMemo(() => (root ? mapToSortedArray(root.children) : []), [root]);
+  const managers = useMemo(
+    () => (selectedUH ? mapToSortedArray(selectedUH.children) : []),
+    [selectedUH]
+  );
+  const branchManagers = useMemo(
+    () => (selectedMgr ? mapToSortedArray(selectedMgr.children) : []),
+    [selectedMgr]
+  );
+  const branches = useMemo(() => {
+    if (selectedBM) return selectedBM.children;
+    return [];
+  }, [selectedBM]);
+
+  const searchResults = useSearchResults(root, query);
+
+  const breadcrumbPath = useMemo(() => {
+    const path = [];
+    if (root) path.push(root.name);
+    if (selectedUH) path.push(selectedUH.name);
+    if (selectedMgr) path.push(selectedMgr.name);
+    if (selectedBM) path.push(selectedBM.selfManaged ? selectedMgr.name + " (self)" : selectedBM.name);
+    return path;
+  }, [root, selectedUH, selectedMgr, selectedBM]);
+
+  const jumpTo = (i) => {
+    if (i === 0) {
+      setSelectedUH(null);
+      setSelectedMgr(null);
+      setSelectedBM(null);
+    } else if (i === 1) {
+      setSelectedMgr(null);
+      setSelectedBM(null);
+    } else if (i === 2) {
+      setSelectedBM(null);
+    }
+  };
+
+  const goToSearchResult = (res) => {
+    const uh = root.children.get(res.path[1]);
+    setSelectedUH(uh || null);
+    const mgr = uh?.children.get(res.path[2]);
+    setSelectedMgr(mgr || null);
+    if (res.kind === "Branch" || res.kind === "Branch Manager") {
+      const bmKey = res.branch
+        ? res.branch.bmName === res.branch.managerName
+          ? "__self__"
+          : res.branch.bmName
+        : res.path[3];
+      const bm = mgr?.children.get(bmKey === res.path[3] ? res.path[3] : bmKey);
+      setSelectedBM(bm || null);
+      if (res.branch) setSelectedBranch(res.branch);
+    } else {
+      setSelectedBM(null);
+    }
+    setQuery("");
+    setShowSearch(false);
+  };
+
+  const reset = () => {
+    setRoot(null);
+    setError("");
+  };
+
+  if (!root) {
+    return (
+      <div style={{ height: "100vh", width: "100%", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
+        <UploadScreen onFile={handleFile} error={error} loading={loading} />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        height: "100vh",
+        width: "100%",
+        display: "flex",
+        flexDirection: "column",
+        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+        background: COLORS.canvas,
+        color: COLORS.ink,
+        overflow: "hidden",
+      }}
+    >
+      {/* Top bar */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "12px 20px",
+          background: COLORS.ink,
+          flexShrink: 0,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <Building2 size={20} color={COLORS.amber} />
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>Branch Network Hierarchy</div>
+            <div
+              style={{
+                fontSize: 11,
+                color: "#9AA3B5",
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+              }}
+            >
+              {meta.branches} branches · {meta.seniors} seniors mapped
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, position: "relative" }}>
+          {showSearch ? (
+            <div style={{ position: "relative" }}>
+              <input
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search people or branches…"
+                style={{
+                  width: 260,
+                  padding: "7px 12px 7px 32px",
+                  borderRadius: 7,
+                  border: "none",
+                  fontSize: 13,
+                  background: "rgba(255,255,255,0.12)",
+                  color: "#fff",
+                  outline: "none",
+                }}
+              />
+              <Search size={14} color="#9AA3B5" style={{ position: "absolute", left: 11, top: 9 }} />
+              {query.trim().length >= 2 && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 38,
+                    right: 0,
+                    width: 320,
+                    maxHeight: 360,
+                    overflowY: "auto",
+                    background: "#fff",
+                    borderRadius: 8,
+                    boxShadow: "0 8px 24px rgba(20,33,61,0.25)",
+                    zIndex: 60,
+                  }}
+                >
+                  {searchResults.length === 0 ? (
+                    <div style={{ padding: 14, fontSize: 13, color: COLORS.slate }}>No matches</div>
+                  ) : (
+                    searchResults.map((r, i) => (
+                      <button
+                        key={i}
+                        onClick={() => goToSearchResult(r)}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          textAlign: "left",
+                          padding: "9px 14px",
+                          border: "none",
+                          borderBottom: `1px solid ${COLORS.hairline}`,
+                          background: "transparent",
+                          cursor: "pointer",
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "#F7F5F0")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                      >
+                        <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.ink }}>{r.name}</div>
+                        <div style={{ fontSize: 11, color: COLORS.slate }}>
+                          {r.kind} · {r.path.slice(1).join(" › ")}
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowSearch(true)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: "rgba(255,255,255,0.1)",
+                border: "none",
+                color: "#fff",
+                borderRadius: 7,
+                padding: "7px 12px",
+                fontSize: 13,
+                cursor: "pointer",
+              }}
+            >
+              <Search size={14} />
+              Search
+            </button>
+          )}
+          {showSearch && (
+            <button
+              onClick={() => {
+                setShowSearch(false);
+                setQuery("");
+              }}
+              style={{ background: "transparent", border: "none", cursor: "pointer", display: "flex" }}
+            >
+              <X size={16} color="#9AA3B5" />
+            </button>
+          )}
+          <button
+            onClick={reset}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              background: "transparent",
+              border: `1px solid rgba(255,255,255,0.25)`,
+              color: "#fff",
+              borderRadius: 7,
+              padding: "7px 12px",
+              fontSize: 13,
+              cursor: "pointer",
+            }}
+          >
+            <Upload size={13} />
+            New file
+          </button>
+        </div>
+      </div>
+
+      {/* Breadcrumb */}
+      <Breadcrumb path={breadcrumbPath} onJump={jumpTo} />
+
+      {/* Columns */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+        {/* Top node card (static, level 1) */}
+        <div
+          style={{
+            flex: "0 0 200px",
+            minWidth: 180,
+            borderRight: `1px solid ${COLORS.hairline}`,
+            padding: 16,
+            background: "#FBFAF7",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: COLORS.slate,
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+              marginBottom: 10,
+            }}
+          >
+            Level 1 — Top
+          </div>
+          <div
+            style={{
+              background: COLORS.ink,
+              borderRadius: 10,
+              padding: 14,
+              color: "#fff",
+            }}
+          >
+            <Building2 size={18} color={COLORS.amber} />
+            <div style={{ fontSize: 15, fontWeight: 700, marginTop: 8 }}>{root.name}</div>
+            <div style={{ fontSize: 11, color: "#9AA3B5", marginTop: 4 }}>
+              {unitHeads.length} unit heads
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <CountBadge n={root.branchCount} tone="amber" />
+              <span style={{ fontSize: 10.5, color: "#9AA3B5", marginLeft: 6 }}>branches total</span>
+            </div>
+          </div>
+        </div>
+
+        <LevelColumn
+          levelLabel="Level 2 — Unit Heads"
+          title={`${unitHeads.length} reporting to ${root.name}`}
+          items={unitHeads}
+          selectedName={selectedUH?.name}
+          onSelect={(item) => {
+            setSelectedUH(item);
+            setSelectedMgr(null);
+            setSelectedBM(null);
+          }}
+        />
+
+        {selectedUH && (
+          <LevelColumn
+            levelLabel="Level 3 — Managers"
+            title={`under ${selectedUH.name}`}
+            items={managers}
+            selectedName={selectedMgr?.name}
+            onSelect={(item) => {
+              setSelectedMgr(item);
+              setSelectedBM(null);
+            }}
+            emptyLabel="No managers recorded"
+          />
+        )}
+
+        {selectedMgr && (
+          <LevelColumn
+            levelLabel="Level 4 — Branch Managers"
+            title={`under ${selectedMgr.name}`}
+            items={branchManagers}
+            selectedName={selectedBM?.selfManaged ? selectedMgr.name : selectedBM?.name}
+            onSelect={(item) => setSelectedBM(item)}
+            emptyLabel="No branch managers recorded"
+          />
+        )}
+
+        {selectedBM && <BranchColumn branches={branches} onSelectBranch={setSelectedBranch} />}
+
+        {/* filler so layout doesn't look empty before drilling */}
+        {!selectedUH && (
+          <div
+            style={{
+              flex: 1,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: COLORS.slate,
+              fontSize: 13,
+            }}
+          >
+            Select a Unit Head to drill into their Managers and branches.
+          </div>
+        )}
+      </div>
+
+      <DetailPanel branch={selectedBranch} onClose={() => setSelectedBranch(null)} />
+      {selectedBranch && (
+        <div
+          onClick={() => setSelectedBranch(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(20,33,61,0.25)", zIndex: 40 }}
+        />
+      )}
+    </div>
+  );
+}
