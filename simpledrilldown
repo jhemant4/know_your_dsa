@@ -1,0 +1,540 @@
+import { useState, useMemo } from "react";
+import * as XLSX from "xlsx";
+
+// ─── helpers ────────────────────────────────────────────────────────────────
+const normalize = (v) => (v === null || v === undefined ? "" : String(v).trim());
+
+const statusColor = (val) => {
+  const v = normalize(val).toLowerCase();
+  if (v === "active") return "active";
+  if (v === "inactive") return "inactive";
+  if (v === "moderate") return "moderate";
+  return "unknown";
+};
+
+const badge = (val) => {
+  const cls = statusColor(val);
+  return <span className={`badge badge-${cls}`}>{normalize(val) || "—"}</span>;
+};
+
+// ─── static sample rows (shown before upload) ───────────────────────────────
+const SAMPLE = [
+  { "DSA Name": "Andromeda", State: "West Bengal", City: "Kolkata", Location: "75-C Park Street", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", "Unit Head Email -ID": "", Manager: "Sajjad Hussain", "Manager Contact Number": "8178732091", "Manager Email- ID": "", "Branch Manager Name": "Sajjad Hussain", "Branch Manager Contact Number": "8510061784", "Branch Manager Email- ID": "", Address: "Office No.801, 8th floor, Kamdhenu Building, 75-C Park Street, Kolkata-700016", BRANCH_NAME: "Dumdum", Branch_Code: "6846", ZONE_HL: "East", GEO_HL: "West Bengal", CLUSTER_HL: "Dumdum", "MTD Jun'26 Login Active - Andromeda": "Inactive", "MTD Jun'26 Disbursal Active - Andromeda": "Inactive" },
+  { "DSA Name": "Andromeda", State: "West Bengal", City: "Kolkata", Location: "75-C Park Street", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", "Unit Head Email -ID": "", Manager: "Sajjad Hussain", "Manager Contact Number": "8178732091", "Manager Email- ID": "", "Branch Manager Name": "Sajjad Hussain", "Branch Manager Contact Number": "8510061784", "Branch Manager Email- ID": "", Address: "Office No.801, 8th floor, Kamdhenu Building, 75-C Park Street, Kolkata-700016", BRANCH_NAME: "Kolkata - Rashbehari", Branch_Code: "6219", ZONE_HL: "East", GEO_HL: "West Bengal", CLUSTER_HL: "Kolkata", "MTD Jun'26 Login Active - Andromeda": "Inactive", "MTD Jun'26 Disbursal Active - Andromeda": "Inactive" },
+  { "DSA Name": "Andromeda", State: "Uttar Pradesh", City: "Ghaziabad", Location: "Vaishali", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", "Unit Head Email -ID": "", Manager: "Yogesh Sharma", "Manager Contact Number": "9772205556", "Manager Email- ID": "", "Branch Manager Name": "Pankaj Bhardwaj", "Branch Manager Contact Number": "9990710500", "Branch Manager Email- ID": "", Address: "1007 S-3 Tower Cloud-9 Sector -01 Vaishali Ghaziabad", BRANCH_NAME: "Ghaziabad", Branch_Code: "6294", ZONE_HL: "North 1", GEO_HL: "NCR 1", CLUSTER_HL: "Ghaziabad", "MTD Jun'26 Login Active - Andromeda": "Active", "MTD Jun'26 Disbursal Active - Andromeda": "Active" },
+  { "DSA Name": "Andromeda", State: "Uttar Pradesh", City: "Ghaziabad", Location: "Vaishali", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", "Unit Head Email -ID": "", Manager: "Yogesh Sharma", "Manager Contact Number": "9772205556", "Manager Email- ID": "", "Branch Manager Name": "Pankaj Bhardwaj", "Branch Manager Contact Number": "9990710500", "Branch Manager Email- ID": "", Address: "1007 S-3 Tower Cloud-9 Sector -01 Vaishali Ghaziabad", BRANCH_NAME: "Ghaziabad - Raj Nagar", Branch_Code: "6306", ZONE_HL: "North 1", GEO_HL: "NCR 1", CLUSTER_HL: "Ghaziabad", "MTD Jun'26 Login Active - Andromeda": "Inactive", "MTD Jun'26 Disbursal Active - Andromeda": "Active" },
+  { "DSA Name": "Andromeda", State: "Uttar Pradesh", City: "Ghaziabad", Location: "Vaishali", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", "Unit Head Email -ID": "", Manager: "Yogesh Sharma", "Manager Contact Number": "9772205556", "Manager Email- ID": "", "Branch Manager Name": "Pankaj Bhardwaj", "Branch Manager Contact Number": "9990710500", "Branch Manager Email- ID": "", Address: "1007 S-3 Tower Cloud-9 Sector -01 Vaishali Ghaziabad", BRANCH_NAME: "Loni", Branch_Code: "6434", ZONE_HL: "North 1", GEO_HL: "NCR 1", CLUSTER_HL: "Delhi - Shahdara", "MTD Jun'26 Login Active - Andromeda": "Active", "MTD Jun'26 Disbursal Active - Andromeda": "Inactive" },
+  { "DSA Name": "Andromeda", State: "Uttar Pradesh", City: "Agra", Location: "Sanjay Place", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", "Unit Head Email -ID": "", Manager: "Yogesh Sharma", "Manager Contact Number": "9772205556", "Manager Email- ID": "", "Branch Manager Name": "Amit Pachauri", "Branch Manager Contact Number": "7520782114", "Branch Manager Email- ID": "", Address: "Office NO. S-2, 2nd Floor Block NO.41/4 A, Friends Tower, Sanjay Place, Agra-282002", BRANCH_NAME: "Agra", Branch_Code: "6251", ZONE_HL: "North 2", GEO_HL: "West UP", CLUSTER_HL: "Agra", "MTD Jun'26 Login Active - Andromeda": "Active", "MTD Jun'26 Disbursal Active - Andromeda": "Active" },
+];
+
+// derive login/disbursal column keys dynamically
+const getActivityCols = (rows) => {
+  if (!rows.length) return { loginCol: null, disbCol: null };
+  const keys = Object.keys(rows[0]);
+  const loginCol = keys.find((k) => k.toLowerCase().includes("login active"));
+  const disbCol = keys.find((k) => k.toLowerCase().includes("disbursal active") || k.toLowerCase().includes("disburs"));
+  return { loginCol, disbCol };
+};
+
+// ─── sub-components ──────────────────────────────────────────────────────────
+
+function PersonCard({ role, name, phone, email }) {
+  return (
+    <div className="person-card">
+      <div className="person-role">{role}</div>
+      <div className="person-name">{name || "—"}</div>
+      {phone && (
+        <a className="person-contact" href={`tel:${phone}`}>
+          📞 {phone}
+        </a>
+      )}
+      {email && (
+        <a className="person-contact" href={`mailto:${email}`}>
+          ✉ {email}
+        </a>
+      )}
+    </div>
+  );
+}
+
+function BranchCard({ row, loginCol, disbCol }) {
+  return (
+    <div className="branch-card">
+      <div className="branch-header">
+        <div>
+          <div className="branch-name">{normalize(row.BRANCH_NAME) || "Branch"}</div>
+          <div className="branch-code">Code: {normalize(row.Branch_Code || row["Branch Code"] || row.BRANCH_CODE)}</div>
+        </div>
+        <div className="branch-badges">
+          <div className="badge-row">
+            <span className="badge-label">Login</span>
+            {badge(loginCol ? row[loginCol] : "")}
+          </div>
+          <div className="badge-row">
+            <span className="badge-label">Disb</span>
+            {badge(disbCol ? row[disbCol] : "")}
+          </div>
+        </div>
+      </div>
+
+      <div className="branch-hierarchy">
+        <span>Zone: <b>{normalize(row.ZONE_HL)}</b></span>
+        <span>Geo: <b>{normalize(row.GEO_HL)}</b></span>
+        <span>Cluster: <b>{normalize(row.CLUSTER_HL)}</b></span>
+      </div>
+
+      <div className="persons-row">
+        <PersonCard role="Unit Head" name={row["Unit Head"]} phone={row["Unit Head Contact Number"]} email={row["Unit Head Email -ID"]} />
+        <PersonCard role="Manager" name={row.Manager} phone={row["Manager Contact Number"]} email={row["Manager Email- ID"]} />
+        <PersonCard role="Branch Manager" name={row["Branch Manager Name"]} phone={row["Branch Manager Contact Number"]} email={row["Branch Manager Email- ID"]} />
+      </div>
+
+      <div className="branch-address">
+        📍 {normalize(row.Address || row.BRANCH_ADDRESS)}
+      </div>
+    </div>
+  );
+}
+
+// expandable geo level
+function GeoNode({ label, children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="tree-node">
+      <button className={`tree-toggle ${open ? "open" : ""}`} onClick={() => setOpen(!open)}>
+        <span className="tree-chevron">{open ? "▾" : "▸"}</span>
+        {label}
+        <span className="tree-count">{children.length}</span>
+      </button>
+      {open && <div className="tree-children">{children}</div>}
+    </div>
+  );
+}
+
+// ─── main component ──────────────────────────────────────────────────────────
+export default function KnowYourDSA() {
+  const [allRows, setAllRows] = useState(SAMPLE);
+  const [selectedDSA, setSelectedDSA] = useState("All");
+  const [selectedState, setSelectedState] = useState("All");
+  const [selectedCity, setSelectedCity] = useState("All");
+  const [selectedZone, setSelectedZone] = useState("All");
+  const [expandedStates, setExpandedStates] = useState({});
+  const [expandedCities, setExpandedCities] = useState({});
+  const [expandedGeos, setExpandedGeos] = useState({});
+
+  // ── parse uploaded xlsx ──
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const wb = XLSX.read(ev.target.result, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      setAllRows(rows);
+      setSelectedDSA("All");
+      setSelectedState("All");
+      setSelectedCity("All");
+      setSelectedZone("All");
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const { loginCol, disbCol } = useMemo(() => getActivityCols(allRows), [allRows]);
+
+  // ── dropdown options ──
+  const dsaList = useMemo(() => ["All", ...new Set(allRows.map((r) => normalize(r["DSA Name"])).filter(Boolean))], [allRows]);
+  const stateList = useMemo(() => {
+    let rows = allRows;
+    if (selectedDSA !== "All") rows = rows.filter((r) => normalize(r["DSA Name"]) === selectedDSA);
+    return ["All", ...new Set(rows.map((r) => normalize(r.State)).filter(Boolean))];
+  }, [allRows, selectedDSA]);
+  const cityList = useMemo(() => {
+    let rows = allRows;
+    if (selectedDSA !== "All") rows = rows.filter((r) => normalize(r["DSA Name"]) === selectedDSA);
+    if (selectedState !== "All") rows = rows.filter((r) => normalize(r.State) === selectedState);
+    return ["All", ...new Set(rows.map((r) => normalize(r.City)).filter(Boolean))];
+  }, [allRows, selectedDSA, selectedState]);
+  const zoneList = useMemo(() => {
+    let rows = allRows;
+    if (selectedDSA !== "All") rows = rows.filter((r) => normalize(r["DSA Name"]) === selectedDSA);
+    return ["All", ...new Set(rows.map((r) => normalize(r.ZONE_HL)).filter(Boolean))];
+  }, [allRows, selectedDSA]);
+
+  // ── filtered rows ──
+  const filtered = useMemo(() => {
+    return allRows.filter((r) => {
+      if (selectedDSA !== "All" && normalize(r["DSA Name"]) !== selectedDSA) return false;
+      if (selectedState !== "All" && normalize(r.State) !== selectedState) return false;
+      if (selectedCity !== "All" && normalize(r.City) !== selectedCity) return false;
+      if (selectedZone !== "All" && normalize(r.ZONE_HL) !== selectedZone) return false;
+      return true;
+    });
+  }, [allRows, selectedDSA, selectedState, selectedCity, selectedZone]);
+
+  // ── ribbon metrics ──
+  const metrics = useMemo(() => {
+    const total = filtered.length;
+    const loginActive = filtered.filter((r) => loginCol && normalize(r[loginCol]).toLowerCase() === "active").length;
+    const disbActive = filtered.filter((r) => disbCol && normalize(r[disbCol]).toLowerCase() === "active").length;
+    const active = filtered.filter((r) => {
+      const l = loginCol ? normalize(r[loginCol]).toLowerCase() : "";
+      const d = disbCol ? normalize(r[disbCol]).toLowerCase() : "";
+      return l === "active" && d === "active";
+    }).length;
+    const inactive = filtered.filter((r) => {
+      const l = loginCol ? normalize(r[loginCol]).toLowerCase() : "";
+      const d = disbCol ? normalize(r[disbCol]).toLowerCase() : "";
+      return l === "inactive" && d === "inactive";
+    }).length;
+    const moderate = total - active - inactive;
+    return {
+      total,
+      active,
+      inactive,
+      moderate: Math.max(0, moderate),
+      loginPct: total ? ((loginActive / total) * 100).toFixed(1) : "0.0",
+      disbPct: total ? ((disbActive / total) * 100).toFixed(1) : "0.0",
+    };
+  }, [filtered, loginCol, disbCol]);
+
+  // ── tree structure ──
+  const tree = useMemo(() => {
+    const map = {};
+    filtered.forEach((row) => {
+      const state = normalize(row.State) || "Unknown";
+      const city = normalize(row.City) || "Unknown";
+      const geo = normalize(row.GEO_HL) || "—";
+      if (!map[state]) map[state] = {};
+      if (!map[state][city]) map[state][city] = {};
+      if (!map[state][city][geo]) map[state][city][geo] = [];
+      map[state][city][geo].push(row);
+    });
+    return map;
+  }, [filtered]);
+
+  const toggleState = (s) => setExpandedStates((p) => ({ ...p, [s]: !p[s] }));
+  const toggleCity = (key) => setExpandedCities((p) => ({ ...p, [key]: !p[key] }));
+  const toggleGeo = (key) => setExpandedGeos((p) => ({ ...p, [key]: !p[key] }));
+
+  return (
+    <>
+      <style>{`
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Inter', system-ui, sans-serif; background: #0f1117; color: #e2e8f0; }
+
+        .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+        /* ── top bar ── */
+        .topbar {
+          background: linear-gradient(90deg, #1a1f2e 0%, #141824 100%);
+          border-bottom: 1px solid #252d3d;
+          padding: 0 20px;
+          height: 52px;
+          display: flex; align-items: center; justify-content: space-between;
+          flex-shrink: 0;
+        }
+        .topbar-brand { font-size: 18px; font-weight: 700; letter-spacing: -.3px; color: #fff; }
+        .topbar-brand span { color: #6366f1; }
+        .upload-btn {
+          background: #6366f1; color: #fff; border: none; border-radius: 6px;
+          padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+          display: flex; align-items: center; gap: 6px;
+        }
+        .upload-btn:hover { background: #4f52d4; }
+        .upload-input { display: none; }
+
+        /* ── ribbon ── */
+        .ribbon {
+          background: #131720;
+          border-bottom: 1px solid #1e2535;
+          display: flex; gap: 0;
+          flex-shrink: 0;
+          overflow-x: auto;
+        }
+        .ribbon-card {
+          padding: 10px 22px;
+          border-right: 1px solid #1e2535;
+          min-width: 120px;
+        }
+        .ribbon-label { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 3px; }
+        .ribbon-value { font-size: 22px; font-weight: 700; color: #f1f5f9; line-height: 1; }
+        .ribbon-value.clr-active { color: #22c55e; }
+        .ribbon-value.clr-inactive { color: #ef4444; }
+        .ribbon-value.clr-moderate { color: #f59e0b; }
+        .ribbon-value.clr-pct { color: #6366f1; }
+
+        /* ── body ── */
+        .body { display: flex; flex: 1; overflow: hidden; }
+
+        /* ── sidebar ── */
+        .sidebar {
+          width: 220px;
+          background: #131720;
+          border-right: 1px solid #1e2535;
+          padding: 16px 12px;
+          display: flex; flex-direction: column; gap: 18px;
+          overflow-y: auto;
+          flex-shrink: 0;
+        }
+        .sidebar-section {}
+        .sidebar-label { font-size: 10px; color: #475569; text-transform: uppercase; letter-spacing: .7px; margin-bottom: 6px; font-weight: 600; }
+        .sidebar select {
+          width: 100%;
+          background: #1a2035;
+          border: 1px solid #253050;
+          color: #e2e8f0;
+          padding: 7px 10px;
+          border-radius: 6px;
+          font-size: 13px;
+          outline: none;
+          cursor: pointer;
+        }
+        .sidebar select:focus { border-color: #6366f1; }
+
+        /* ── main grid ── */
+        .main { flex: 1; overflow-y: auto; padding: 16px; }
+
+        .empty { text-align: center; color: #475569; padding: 60px 20px; font-size: 14px; }
+
+        /* ── state row ── */
+        .state-block { margin-bottom: 12px; }
+        .state-header {
+          display: flex; align-items: center; gap: 8px;
+          background: #1a1f2e;
+          border: 1px solid #252d3d;
+          border-radius: 8px;
+          padding: 10px 14px;
+          cursor: pointer;
+          user-select: none;
+          font-weight: 600;
+          font-size: 14px;
+          color: #e2e8f0;
+          transition: background .15s;
+        }
+        .state-header:hover { background: #1e2540; }
+        .state-header.open { border-color: #6366f1; }
+        .state-chevron { font-size: 11px; color: #6366f1; transition: transform .2s; }
+        .state-header.open .state-chevron { transform: rotate(90deg); }
+        .state-count { margin-left: auto; font-size: 11px; background: #252d3d; color: #94a3b8; padding: 2px 8px; border-radius: 20px; font-weight: 500; }
+
+        .city-block { margin: 8px 0 0 16px; }
+        .city-header {
+          display: flex; align-items: center; gap: 8px;
+          background: #161b28;
+          border: 1px solid #1e2535;
+          border-radius: 6px;
+          padding: 8px 12px;
+          cursor: pointer;
+          user-select: none;
+          font-size: 13px;
+          color: #cbd5e1;
+          transition: background .15s;
+          margin-bottom: 6px;
+        }
+        .city-header:hover { background: #1a2030; }
+        .city-header.open { border-color: #818cf8; }
+        .city-count { margin-left: auto; font-size: 11px; background: #1e2535; color: #94a3b8; padding: 2px 7px; border-radius: 20px; }
+
+        .geo-block { margin: 0 0 6px 16px; }
+        .geo-header {
+          display: flex; align-items: center; gap: 8px;
+          background: #121722;
+          border: 1px solid #1a2030;
+          border-radius: 6px;
+          padding: 7px 12px;
+          cursor: pointer;
+          user-select: none;
+          font-size: 12px;
+          color: #94a3b8;
+          transition: background .15s;
+          margin-bottom: 4px;
+        }
+        .geo-header:hover { background: #161c2a; }
+        .geo-header.open { border-color: #4f46e5; color: #c7d2fe; }
+        .geo-count { margin-left: auto; font-size: 10px; background: #1a2030; color: #64748b; padding: 1px 6px; border-radius: 20px; }
+
+        /* ── branch card ── */
+        .branches-grid { display: flex; flex-direction: column; gap: 8px; margin: 0 0 8px 16px; }
+        .branch-card {
+          background: #0f1320;
+          border: 1px solid #1e2535;
+          border-radius: 8px;
+          padding: 14px;
+        }
+        .branch-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+        .branch-name { font-weight: 600; font-size: 14px; color: #e2e8f0; }
+        .branch-code { font-size: 11px; color: #475569; margin-top: 2px; }
+        .branch-badges { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+        .badge-row { display: flex; align-items: center; gap: 5px; }
+        .badge-label { font-size: 10px; color: #475569; }
+
+        .badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 20px; text-transform: uppercase; letter-spacing: .4px; }
+        .badge-active { background: #14532d; color: #4ade80; }
+        .badge-inactive { background: #450a0a; color: #f87171; }
+        .badge-moderate { background: #451a03; color: #fbbf24; }
+        .badge-unknown { background: #1e2535; color: #64748b; }
+
+        .branch-hierarchy { display: flex; gap: 14px; font-size: 11px; color: #64748b; margin-bottom: 10px; flex-wrap: wrap; }
+        .branch-hierarchy b { color: #94a3b8; }
+
+        .persons-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+        .person-card {
+          flex: 1; min-width: 130px;
+          background: #141929;
+          border: 1px solid #1e2a3a;
+          border-radius: 6px;
+          padding: 8px 10px;
+        }
+        .person-role { font-size: 9px; text-transform: uppercase; letter-spacing: .6px; color: #475569; margin-bottom: 3px; }
+        .person-name { font-size: 12px; font-weight: 600; color: #e2e8f0; margin-bottom: 4px; }
+        .person-contact { display: block; font-size: 11px; color: #818cf8; text-decoration: none; margin-top: 2px; }
+        .person-contact:hover { text-decoration: underline; }
+
+        .branch-address { font-size: 11px; color: #475569; line-height: 1.4; border-top: 1px solid #1e2535; padding-top: 8px; }
+
+        /* ── tree-node (generic) ── */
+        .tree-node { margin-bottom: 4px; }
+        .tree-toggle {
+          display: flex; align-items: center; gap: 6px;
+          background: none; border: none; color: #94a3b8;
+          font-size: 12px; cursor: pointer; padding: 4px 0;
+        }
+        .tree-chevron { font-size: 10px; color: #6366f1; }
+        .tree-count { background: #1e2535; color: #64748b; font-size: 10px; padding: 1px 6px; border-radius: 20px; }
+        .tree-children { margin-left: 14px; }
+
+        /* scrollbar */
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: #0f1117; }
+        ::-webkit-scrollbar-thumb { background: #252d3d; border-radius: 4px; }
+      `}</style>
+
+      <div className="app">
+        {/* TOP BAR */}
+        <div className="topbar">
+          <div className="topbar-brand">Know Your <span>DSA</span></div>
+          <label className="upload-btn">
+            ⬆ Upload Excel
+            <input className="upload-input" type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} />
+          </label>
+        </div>
+
+        {/* RIBBON */}
+        <div className="ribbon">
+          <div className="ribbon-card">
+            <div className="ribbon-label">Total Branches</div>
+            <div className="ribbon-value">{metrics.total}</div>
+          </div>
+          <div className="ribbon-card">
+            <div className="ribbon-label">Active</div>
+            <div className="ribbon-value clr-active">{metrics.active}</div>
+          </div>
+          <div className="ribbon-card">
+            <div className="ribbon-label">Inactive</div>
+            <div className="ribbon-value clr-inactive">{metrics.inactive}</div>
+          </div>
+          <div className="ribbon-card">
+            <div className="ribbon-label">Moderate</div>
+            <div className="ribbon-value clr-moderate">{metrics.moderate}</div>
+          </div>
+          <div className="ribbon-card">
+            <div className="ribbon-label">Login Active %</div>
+            <div className="ribbon-value clr-pct">{metrics.loginPct}%</div>
+          </div>
+          <div className="ribbon-card">
+            <div className="ribbon-label">Disb Active %</div>
+            <div className="ribbon-value clr-pct">{metrics.disbPct}%</div>
+          </div>
+        </div>
+
+        {/* BODY */}
+        <div className="body">
+          {/* SIDEBAR */}
+          <div className="sidebar">
+            <div className="sidebar-section">
+              <div className="sidebar-label">DSA</div>
+              <select value={selectedDSA} onChange={(e) => { setSelectedDSA(e.target.value); setSelectedState("All"); setSelectedCity("All"); setSelectedZone("All"); }}>
+                {dsaList.map((d) => <option key={d}>{d}</option>)}
+              </select>
+            </div>
+            <div className="sidebar-section">
+              <div className="sidebar-label">State</div>
+              <select value={selectedState} onChange={(e) => { setSelectedState(e.target.value); setSelectedCity("All"); }}>
+                {stateList.map((s) => <option key={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="sidebar-section">
+              <div className="sidebar-label">City</div>
+              <select value={selectedCity} onChange={(e) => setSelectedCity(e.target.value)}>
+                {cityList.map((c) => <option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div className="sidebar-section">
+              <div className="sidebar-label">Zone</div>
+              <select value={selectedZone} onChange={(e) => setSelectedZone(e.target.value)}>
+                {zoneList.map((z) => <option key={z}>{z}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* MAIN GRID */}
+          <div className="main">
+            {filtered.length === 0 && <div className="empty">No branches match the selected filters.</div>}
+
+            {Object.entries(tree).map(([state, cities]) => {
+              const stateOpen = !!expandedStates[state];
+              const stateCount = Object.values(cities).flatMap((g) => Object.values(g)).flat().length;
+              return (
+                <div key={state} className="state-block">
+                  <div className={`state-header ${stateOpen ? "open" : ""}`} onClick={() => toggleState(state)}>
+                    <span className="state-chevron">▶</span>
+                    🏛 {state}
+                    <span className="state-count">{stateCount} branches</span>
+                  </div>
+
+                  {stateOpen && Object.entries(cities).map(([city, geos]) => {
+                    const cityKey = `${state}__${city}`;
+                    const cityOpen = !!expandedCities[cityKey];
+                    const cityCount = Object.values(geos).flat().length;
+                    return (
+                      <div key={city} className="city-block">
+                        <div className={`city-header ${cityOpen ? "open" : ""}`} onClick={() => toggleCity(cityKey)}>
+                          <span style={{ fontSize: 10, color: "#818cf8" }}>{cityOpen ? "▾" : "▸"}</span>
+                          🏙 {city}
+                          <span className="city-count">{cityCount}</span>
+                        </div>
+
+                        {cityOpen && Object.entries(geos).map(([geo, rows]) => {
+                          const geoKey = `${cityKey}__${geo}`;
+                          const geoOpen = !!expandedGeos[geoKey];
+                          return (
+                            <div key={geo} className="geo-block">
+                              <div className={`geo-header ${geoOpen ? "open" : ""}`} onClick={() => toggleGeo(geoKey)}>
+                                <span style={{ fontSize: 10 }}>{geoOpen ? "▾" : "▸"}</span>
+                                📍 {geo}
+                                <span className="geo-count">{rows.length}</span>
+                              </div>
+
+                              {geoOpen && (
+                                <div className="branches-grid">
+                                  {rows.map((row, i) => (
+                                    <BranchCard key={i} row={row} loginCol={loginCol} disbCol={disbCol} />
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
