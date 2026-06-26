@@ -1,0 +1,588 @@
+import { useState, useMemo } from "react";
+import * as XLSX from "xlsx";
+
+const normalize = (v) => (v === null || v === undefined ? "" : String(v).trim());
+
+const statusColor = (val) => {
+  const v = normalize(val).toLowerCase();
+  if (v === "active") return "active";
+  if (v === "inactive") return "inactive";
+  if (v === "moderate") return "moderate";
+  return "unknown";
+};
+
+const badge = (val) => {
+  const cls = statusColor(val);
+  return <span className={`badge badge-${cls}`}>{normalize(val) || "—"}</span>;
+};
+
+const SAMPLE = [
+  { "DSA Name": "Andromeda", State: "West Bengal", City: "Kolkata", Location: "75-C Park Street", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", "Unit Head Email -ID": "", Manager: "Sajjad Hussain", "Manager Contact Number": "8178732091", "Manager Email- ID": "", "Branch Manager Name": "Sajjad Hussain", "Branch Manager Contact Number": "8510061784", "Branch Manager Email- ID": "", Address: "Office No.801, 8th floor, Kamdhenu Building, 75-C Park Street, Kolkata-700016", BRANCH_NAME: "Dumdum", Branch_Code: "6846", ZONE_HL: "East", GEO_HL: "West Bengal", CLUSTER_HL: "Dumdum", "MTD Jun'26 Login Active - Andromeda": "Inactive", "MTD Jun'26 Disbursal Active - Andromeda": "Inactive" },
+  { "DSA Name": "Andromeda", State: "West Bengal", City: "Kolkata", Location: "75-C Park Street", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", "Unit Head Email -ID": "", Manager: "Sajjad Hussain", "Manager Contact Number": "8178732091", "Manager Email- ID": "", "Branch Manager Name": "Sajjad Hussain", "Branch Manager Contact Number": "8510061784", "Branch Manager Email- ID": "", Address: "Office No.801, 8th floor, Kamdhenu Building, 75-C Park Street, Kolkata-700016", BRANCH_NAME: "Kolkata - Rashbehari", Branch_Code: "6219", ZONE_HL: "East", GEO_HL: "West Bengal", CLUSTER_HL: "Kolkata", "MTD Jun'26 Login Active - Andromeda": "Inactive", "MTD Jun'26 Disbursal Active - Andromeda": "Inactive" },
+  { "DSA Name": "Andromeda", State: "Uttar Pradesh", City: "Ghaziabad", Location: "Vaishali", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", "Unit Head Email -ID": "", Manager: "Yogesh Sharma", "Manager Contact Number": "9772205556", "Manager Email- ID": "", "Branch Manager Name": "Pankaj Bhardwaj", "Branch Manager Contact Number": "9990710500", "Branch Manager Email- ID": "", Address: "1007 S-3 Tower Cloud-9 Sector -01 Vaishali Ghaziabad", BRANCH_NAME: "Ghaziabad", Branch_Code: "6294", ZONE_HL: "North 1", GEO_HL: "NCR 1", CLUSTER_HL: "Ghaziabad", "MTD Jun'26 Login Active - Andromeda": "Active", "MTD Jun'26 Disbursal Active - Andromeda": "Active" },
+  { "DSA Name": "Andromeda", State: "Uttar Pradesh", City: "Ghaziabad", Location: "Vaishali", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", "Unit Head Email -ID": "", Manager: "Yogesh Sharma", "Manager Contact Number": "9772205556", "Manager Email- ID": "", "Branch Manager Name": "Pankaj Bhardwaj", "Branch Manager Contact Number": "9990710500", "Branch Manager Email- ID": "", Address: "1007 S-3 Tower Cloud-9 Sector -01 Vaishali Ghaziabad", BRANCH_NAME: "Ghaziabad - Raj Nagar", Branch_Code: "6306", ZONE_HL: "North 1", GEO_HL: "NCR 1", CLUSTER_HL: "Ghaziabad", "MTD Jun'26 Login Active - Andromeda": "Inactive", "MTD Jun'26 Disbursal Active - Andromeda": "Active" },
+  { "DSA Name": "Andromeda", State: "Uttar Pradesh", City: "Ghaziabad", Location: "Vaishali", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", "Unit Head Email -ID": "", Manager: "Yogesh Sharma", "Manager Contact Number": "9772205556", "Manager Email- ID": "", "Branch Manager Name": "Pankaj Bhardwaj", "Branch Manager Contact Number": "9990710500", "Branch Manager Email- ID": "", Address: "1007 S-3 Tower Cloud-9 Sector -01 Vaishali Ghaziabad", BRANCH_NAME: "Loni", Branch_Code: "6434", ZONE_HL: "North 1", GEO_HL: "NCR 1", CLUSTER_HL: "Delhi - Shahdara", "MTD Jun'26 Login Active - Andromeda": "Active", "MTD Jun'26 Disbursal Active - Andromeda": "Inactive" },
+  { "DSA Name": "Andromeda", State: "Uttar Pradesh", City: "Agra", Location: "Sanjay Place", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", "Unit Head Email -ID": "", Manager: "Yogesh Sharma", "Manager Contact Number": "9772205556", "Manager Email- ID": "", "Branch Manager Name": "Amit Pachauri", "Branch Manager Contact Number": "7520782114", "Branch Manager Email- ID": "", Address: "Office NO. S-2, 2nd Floor Block NO.41/4 A, Friends Tower, Sanjay Place, Agra-282002", BRANCH_NAME: "Agra", Branch_Code: "6251", ZONE_HL: "North 2", GEO_HL: "West UP", CLUSTER_HL: "Agra", "MTD Jun'26 Login Active - Andromeda": "Active", "MTD Jun'26 Disbursal Active - Andromeda": "Active" },
+];
+
+const getActivityCols = (rows) => {
+  if (!rows.length) return { loginCol: null, disbCol: null };
+  const keys = Object.keys(rows[0]);
+  const loginCol = keys.find((k) => k.toLowerCase().includes("login active"));
+  const disbCol = keys.find((k) => k.toLowerCase().includes("disbursal active") || k.toLowerCase().includes("disburs"));
+  return { loginCol, disbCol };
+};
+
+function PersonCard({ role, name, phone, email }) {
+  return (
+    <div className="person-card">
+      <div className="person-role">{role}</div>
+      <div className="person-name">{name || "—"}</div>
+      {phone && <a className="person-contact" href={`tel:${phone}`}>📞 {phone}</a>}
+      {email && <a className="person-contact" href={`mailto:${email}`}>✉ {email}</a>}
+    </div>
+  );
+}
+
+function BranchCard({ row, loginCol, disbCol }) {
+  return (
+    <div className="branch-card">
+      <div className="branch-header">
+        <div>
+          <div className="branch-name">{normalize(row.BRANCH_NAME) || "Branch"}</div>
+          <div className="branch-code">Code: {normalize(row.Branch_Code || row["Branch Code"] || row.BRANCH_CODE)}</div>
+        </div>
+        <div className="branch-badges">
+          <div className="badge-row"><span className="badge-label">Login</span>{badge(loginCol ? row[loginCol] : "")}</div>
+          <div className="badge-row"><span className="badge-label">Disb</span>{badge(disbCol ? row[disbCol] : "")}</div>
+        </div>
+      </div>
+      <div className="branch-hierarchy">
+        <span>Zone: <b>{normalize(row.ZONE_HL)}</b></span>
+        <span>Geo: <b>{normalize(row.GEO_HL)}</b></span>
+        <span>Cluster: <b>{normalize(row.CLUSTER_HL)}</b></span>
+      </div>
+      <div className="persons-row">
+        <PersonCard role="Unit Head" name={row["Unit Head"]} phone={row["Unit Head Contact Number"]} email={row["Unit Head Email -ID"]} />
+        <PersonCard role="Manager" name={row.Manager} phone={row["Manager Contact Number"]} email={row["Manager Email- ID"]} />
+        <PersonCard role="Branch Manager" name={row["Branch Manager Name"]} phone={row["Branch Manager Contact Number"]} email={row["Branch Manager Email- ID"]} />
+      </div>
+      <div className="branch-address">📍 {normalize(row.Address || row.BRANCH_ADDRESS)}</div>
+    </div>
+  );
+}
+
+// ── State summary card for the grid view ──
+function StateCard({ state, rows, loginCol, disbCol, onClick }) {
+  const total = rows.length;
+  const loginActive = rows.filter(r => loginCol && normalize(r[loginCol]).toLowerCase() === "active").length;
+  const disbActive = rows.filter(r => disbCol && normalize(r[disbCol]).toLowerCase() === "active").length;
+  const bothActive = rows.filter(r => {
+    const l = loginCol ? normalize(r[loginCol]).toLowerCase() : "";
+    const d = disbCol ? normalize(r[disbCol]).toLowerCase() : "";
+    return l === "active" && d === "active";
+  }).length;
+  const bothInactive = rows.filter(r => {
+    const l = loginCol ? normalize(r[loginCol]).toLowerCase() : "";
+    const d = disbCol ? normalize(r[disbCol]).toLowerCase() : "";
+    return l === "inactive" && d === "inactive";
+  }).length;
+  const moderate = total - bothActive - bothInactive;
+  const cities = new Set(rows.map(r => normalize(r.City)).filter(Boolean)).size;
+  const zones = new Set(rows.map(r => normalize(r.ZONE_HL)).filter(Boolean)).size;
+  const loginPct = total ? Math.round((loginActive / total) * 100) : 0;
+  const disbPct = total ? Math.round((disbActive / total) * 100) : 0;
+
+  return (
+    <div className="state-card" onClick={() => onClick(state)}>
+      <div className="state-card-header">
+        <div className="state-card-name">{state}</div>
+        <div className="state-card-total">{total} <span>branches</span></div>
+      </div>
+
+      <div className="state-card-stats">
+        <div className="stat-pill active-pill">
+          <div className="stat-num">{bothActive}</div>
+          <div className="stat-lbl">Active</div>
+        </div>
+        <div className="stat-pill inactive-pill">
+          <div className="stat-num">{bothInactive}</div>
+          <div className="stat-lbl">Inactive</div>
+        </div>
+        <div className="stat-pill moderate-pill">
+          <div className="stat-num">{Math.max(0, moderate)}</div>
+          <div className="stat-lbl">Moderate</div>
+        </div>
+      </div>
+
+      <div className="state-card-bars">
+        <div className="bar-row">
+          <span className="bar-label">Login</span>
+          <div className="bar-track">
+            <div className="bar-fill bar-login" style={{ width: `${loginPct}%` }} />
+          </div>
+          <span className="bar-pct">{loginPct}%</span>
+        </div>
+        <div className="bar-row">
+          <span className="bar-label">Disb</span>
+          <div className="bar-track">
+            <div className="bar-fill bar-disb" style={{ width: `${disbPct}%` }} />
+          </div>
+          <span className="bar-pct">{disbPct}%</span>
+        </div>
+      </div>
+
+      <div className="state-card-footer">
+        <span>🏙 {cities} {cities === 1 ? "city" : "cities"}</span>
+        <span>🗺 {zones} {zones === 1 ? "zone" : "zones"}</span>
+        <span className="drill-hint">Click to drill →</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Detail drill-down view (branch cards) ──
+function DrillView({ state, rows, loginCol, disbCol, onBack }) {
+  const [expandedCities, setExpandedCities] = useState({});
+  const [expandedGeos, setExpandedGeos] = useState({});
+
+  const tree = useMemo(() => {
+    const map = {};
+    rows.forEach(row => {
+      const city = normalize(row.City) || "Unknown";
+      const geo = normalize(row.GEO_HL) || "—";
+      if (!map[city]) map[city] = {};
+      if (!map[city][geo]) map[city][geo] = [];
+      map[city][geo].push(row);
+    });
+    return map;
+  }, [rows]);
+
+  const toggleCity = (key) => setExpandedCities(p => ({ ...p, [key]: !p[key] }));
+  const toggleGeo = (key) => setExpandedGeos(p => ({ ...p, [key]: !p[key] }));
+
+  return (
+    <div className="drill-view">
+      <div className="drill-header">
+        <button className="back-btn" onClick={onBack}>← Back to States</button>
+        <span className="drill-title">🏛 {state}</span>
+        <span className="drill-count">{rows.length} branches</span>
+      </div>
+
+      {Object.entries(tree).map(([city, geos]) => {
+        const cityOpen = !!expandedCities[city];
+        const cityCount = Object.values(geos).flat().length;
+        return (
+          <div key={city} className="city-block">
+            <div className={`city-header ${cityOpen ? "open" : ""}`} onClick={() => toggleCity(city)}>
+              <span style={{ fontSize: 10, color: "#818cf8" }}>{cityOpen ? "▾" : "▸"}</span>
+              🏙 {city}
+              <span className="city-count">{cityCount}</span>
+            </div>
+            {cityOpen && Object.entries(geos).map(([geo, geoRows]) => {
+              const geoKey = `${city}__${geo}`;
+              const geoOpen = !!expandedGeos[geoKey];
+              return (
+                <div key={geo} className="geo-block">
+                  <div className={`geo-header ${geoOpen ? "open" : ""}`} onClick={() => toggleGeo(geoKey)}>
+                    <span style={{ fontSize: 10 }}>{geoOpen ? "▾" : "▸"}</span>
+                    📍 {geo}
+                    <span className="geo-count">{geoRows.length}</span>
+                  </div>
+                  {geoOpen && (
+                    <div className="branches-grid">
+                      {geoRows.map((row, i) => <BranchCard key={i} row={row} loginCol={loginCol} disbCol={disbCol} />)}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export default function KnowYourDSA() {
+  const [allRows, setAllRows] = useState(SAMPLE);
+  const [selectedDSA, setSelectedDSA] = useState("All");
+  const [selectedState, setSelectedState] = useState("All");
+  const [selectedCity, setSelectedCity] = useState("All");
+  const [loginStatus, setLoginStatus] = useState("All");
+  const [disbStatus, setDisbStatus] = useState("All");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [drillState, setDrillState] = useState(null); // null = grid view
+
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const wb = XLSX.read(ev.target.result, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      setAllRows(rows);
+      setSelectedDSA("All"); setSelectedState("All"); setSelectedCity("All");
+      setLoginStatus("All"); setDisbStatus("All"); setSearchQuery(""); setDrillState(null);
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const { loginCol, disbCol } = useMemo(() => getActivityCols(allRows), [allRows]);
+
+  const dsaList = useMemo(() => ["All", ...new Set(allRows.map(r => normalize(r["DSA Name"])).filter(Boolean))], [allRows]);
+  const stateList = useMemo(() => {
+    let rows = allRows;
+    if (selectedDSA !== "All") rows = rows.filter(r => normalize(r["DSA Name"]) === selectedDSA);
+    return ["All", ...new Set(rows.map(r => normalize(r.State)).filter(Boolean))];
+  }, [allRows, selectedDSA]);
+  const cityList = useMemo(() => {
+    let rows = allRows;
+    if (selectedDSA !== "All") rows = rows.filter(r => normalize(r["DSA Name"]) === selectedDSA);
+    if (selectedState !== "All") rows = rows.filter(r => normalize(r.State) === selectedState);
+    return ["All", ...new Set(rows.map(r => normalize(r.City)).filter(Boolean))];
+  }, [allRows, selectedDSA, selectedState]);
+
+  const filtered = useMemo(() => {
+    return allRows.filter(r => {
+      if (selectedDSA !== "All" && normalize(r["DSA Name"]) !== selectedDSA) return false;
+      if (selectedState !== "All" && normalize(r.State) !== selectedState) return false;
+      if (selectedCity !== "All" && normalize(r.City) !== selectedCity) return false;
+      if (loginStatus !== "All" && loginCol && normalize(r[loginCol]).toLowerCase() !== loginStatus.toLowerCase()) return false;
+      if (disbStatus !== "All" && disbCol && normalize(r[disbCol]).toLowerCase() !== disbStatus.toLowerCase()) return false;
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const searchable = [
+          r.BRANCH_NAME, r["DSA Name"], r.State, r.City,
+          r.Branch_Code, r.ZONE_HL, r.GEO_HL, r.CLUSTER_HL,
+          r["Unit Head"], r.Manager, r["Branch Manager Name"],
+          r.Address, r.Location,
+          r["Unit Head Contact Number"], r["Manager Contact Number"], r["Branch Manager Contact Number"]
+        ].map(normalize).join(" ").toLowerCase();
+        if (!searchable.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [allRows, selectedDSA, selectedState, selectedCity, loginStatus, disbStatus, loginCol, disbCol, searchQuery]);
+
+  const metrics = useMemo(() => {
+    const total = filtered.length;
+    const loginActive = filtered.filter(r => loginCol && normalize(r[loginCol]).toLowerCase() === "active").length;
+    const disbActive = filtered.filter(r => disbCol && normalize(r[disbCol]).toLowerCase() === "active").length;
+    const active = filtered.filter(r => {
+      const l = loginCol ? normalize(r[loginCol]).toLowerCase() : "";
+      const d = disbCol ? normalize(r[disbCol]).toLowerCase() : "";
+      return l === "active" && d === "active";
+    }).length;
+    const inactive = filtered.filter(r => {
+      const l = loginCol ? normalize(r[loginCol]).toLowerCase() : "";
+      const d = disbCol ? normalize(r[disbCol]).toLowerCase() : "";
+      return l === "inactive" && d === "inactive";
+    }).length;
+    return {
+      total, active, inactive,
+      moderate: Math.max(0, total - active - inactive),
+      loginPct: total ? ((loginActive / total) * 100).toFixed(1) : "0.0",
+      disbPct: total ? ((disbActive / total) * 100).toFixed(1) : "0.0",
+    };
+  }, [filtered, loginCol, disbCol]);
+
+  // state-grouped data for grid
+  const stateMap = useMemo(() => {
+    const map = {};
+    filtered.forEach(r => {
+      const s = normalize(r.State) || "Unknown";
+      if (!map[s]) map[s] = [];
+      map[s].push(r);
+    });
+    return map;
+  }, [filtered]);
+
+  const drillRows = drillState ? (stateMap[drillState] || []) : [];
+
+  return (
+    <>
+      <style>{`
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Inter', system-ui, sans-serif; background: #0f1117; color: #e2e8f0; }
+        .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+        /* TOP BAR */
+        .topbar {
+          background: linear-gradient(90deg, #1a1f2e 0%, #141824 100%);
+          border-bottom: 1px solid #252d3d;
+          padding: 0 20px; height: 52px;
+          display: flex; align-items: center; justify-content: space-between;
+          flex-shrink: 0;
+        }
+        .topbar-brand { font-size: 18px; font-weight: 700; letter-spacing: -.3px; color: #fff; }
+        .topbar-brand span { color: #6366f1; }
+        .upload-btn {
+          background: #6366f1; color: #fff; border: none; border-radius: 6px;
+          padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+          display: flex; align-items: center; gap: 6px;
+        }
+        .upload-btn:hover { background: #4f52d4; }
+        .upload-input { display: none; }
+
+        /* RIBBON */
+        .ribbon {
+          background: #131720; border-bottom: 1px solid #1e2535;
+          display: flex; gap: 0; flex-shrink: 0; overflow-x: auto;
+        }
+        .ribbon-card { padding: 10px 22px; border-right: 1px solid #1e2535; min-width: 120px; }
+        .ribbon-label { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 3px; }
+        .ribbon-value { font-size: 22px; font-weight: 700; color: #f1f5f9; line-height: 1; }
+        .ribbon-value.clr-active { color: #22c55e; }
+        .ribbon-value.clr-inactive { color: #ef4444; }
+        .ribbon-value.clr-moderate { color: #f59e0b; }
+        .ribbon-value.clr-pct { color: #6366f1; }
+
+        /* BODY */
+        .body { display: flex; flex: 1; overflow: hidden; }
+
+        /* SIDEBAR */
+        .sidebar {
+          width: 220px; background: #131720; border-right: 1px solid #1e2535;
+          padding: 16px 12px; display: flex; flex-direction: column; gap: 16px;
+          overflow-y: auto; flex-shrink: 0;
+        }
+        .sidebar-label { font-size: 10px; color: #475569; text-transform: uppercase; letter-spacing: .7px; margin-bottom: 6px; font-weight: 600; }
+        .sidebar select, .sidebar input {
+          width: 100%; background: #1a2035; border: 1px solid #253050;
+          color: #e2e8f0; padding: 7px 10px; border-radius: 6px;
+          font-size: 13px; outline: none; cursor: pointer;
+        }
+        .sidebar select:focus, .sidebar input:focus { border-color: #6366f1; }
+        .sidebar input::placeholder { color: #475569; }
+        .sidebar input { cursor: text; }
+
+        /* MAIN */
+        .main { flex: 1; overflow-y: auto; padding: 16px; }
+
+        /* ── STATE GRID ── */
+        .states-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 14px;
+        }
+        .state-card {
+          background: #131a2a;
+          border: 1px solid #1e2a3d;
+          border-radius: 10px;
+          padding: 16px;
+          cursor: pointer;
+          transition: border-color .2s, transform .15s;
+          display: flex; flex-direction: column; gap: 12px;
+        }
+        .state-card:hover { border-color: #6366f1; transform: translateY(-2px); }
+        .state-card-header { display: flex; justify-content: space-between; align-items: flex-start; }
+        .state-card-name { font-size: 15px; font-weight: 700; color: #e2e8f0; line-height: 1.2; }
+        .state-card-total { font-size: 20px; font-weight: 800; color: #6366f1; text-align: right; line-height: 1; }
+        .state-card-total span { display: block; font-size: 10px; font-weight: 400; color: #475569; }
+
+        .state-card-stats { display: flex; gap: 8px; }
+        .stat-pill {
+          flex: 1; border-radius: 8px; padding: 8px 6px; text-align: center;
+        }
+        .active-pill { background: #0d2218; border: 1px solid #14532d; }
+        .inactive-pill { background: #200d0d; border: 1px solid #450a0a; }
+        .moderate-pill { background: #1f1308; border: 1px solid #451a03; }
+        .stat-num { font-size: 18px; font-weight: 700; line-height: 1; }
+        .active-pill .stat-num { color: #4ade80; }
+        .inactive-pill .stat-num { color: #f87171; }
+        .moderate-pill .stat-num { color: #fbbf24; }
+        .stat-lbl { font-size: 9px; color: #64748b; margin-top: 3px; text-transform: uppercase; letter-spacing: .4px; }
+
+        .state-card-bars { display: flex; flex-direction: column; gap: 7px; }
+        .bar-row { display: flex; align-items: center; gap: 8px; }
+        .bar-label { font-size: 10px; color: #64748b; width: 28px; flex-shrink: 0; }
+        .bar-track { flex: 1; height: 6px; background: #1e2535; border-radius: 3px; overflow: hidden; }
+        .bar-fill { height: 100%; border-radius: 3px; transition: width .4s ease; }
+        .bar-login { background: linear-gradient(90deg, #6366f1, #818cf8); }
+        .bar-disb { background: linear-gradient(90deg, #059669, #34d399); }
+        .bar-pct { font-size: 11px; font-weight: 600; color: #94a3b8; width: 34px; text-align: right; flex-shrink: 0; }
+
+        .state-card-footer {
+          display: flex; justify-content: space-between; align-items: center;
+          font-size: 11px; color: #475569; border-top: 1px solid #1e2535; padding-top: 10px;
+        }
+        .drill-hint { color: #6366f1; font-weight: 600; font-size: 11px; }
+
+        /* EMPTY */
+        .empty { text-align: center; color: #475569; padding: 60px 20px; font-size: 14px; }
+
+        /* DRILL VIEW */
+        .drill-view { display: flex; flex-direction: column; gap: 8px; }
+        .drill-header {
+          display: flex; align-items: center; gap: 12px;
+          background: #1a1f2e; border: 1px solid #252d3d;
+          border-radius: 8px; padding: 10px 16px; margin-bottom: 8px;
+        }
+        .back-btn {
+          background: #252d3d; border: none; color: #818cf8; padding: 5px 12px;
+          border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;
+        }
+        .back-btn:hover { background: #2e3a50; }
+        .drill-title { font-size: 16px; font-weight: 700; color: #e2e8f0; }
+        .drill-count { margin-left: auto; font-size: 12px; color: #64748b; background: #1e2535; padding: 3px 10px; border-radius: 20px; }
+
+        /* CITY / GEO TREE */
+        .city-block { margin: 0 0 8px 0; }
+        .city-header {
+          display: flex; align-items: center; gap: 8px;
+          background: #161b28; border: 1px solid #1e2535; border-radius: 6px;
+          padding: 8px 12px; cursor: pointer; user-select: none;
+          font-size: 13px; color: #cbd5e1; transition: background .15s; margin-bottom: 6px;
+        }
+        .city-header:hover { background: #1a2030; }
+        .city-header.open { border-color: #818cf8; }
+        .city-count { margin-left: auto; font-size: 11px; background: #1e2535; color: #94a3b8; padding: 2px 7px; border-radius: 20px; }
+
+        .geo-block { margin: 0 0 6px 16px; }
+        .geo-header {
+          display: flex; align-items: center; gap: 8px;
+          background: #121722; border: 1px solid #1a2030; border-radius: 6px;
+          padding: 7px 12px; cursor: pointer; user-select: none;
+          font-size: 12px; color: #94a3b8; transition: background .15s; margin-bottom: 4px;
+        }
+        .geo-header:hover { background: #161c2a; }
+        .geo-header.open { border-color: #4f46e5; color: #c7d2fe; }
+        .geo-count { margin-left: auto; font-size: 10px; background: #1a2030; color: #64748b; padding: 1px 6px; border-radius: 20px; }
+
+        /* BRANCH CARDS */
+        .branches-grid { display: flex; flex-direction: column; gap: 8px; margin: 0 0 8px 16px; }
+        .branch-card { background: #0f1320; border: 1px solid #1e2535; border-radius: 8px; padding: 14px; }
+        .branch-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+        .branch-name { font-weight: 600; font-size: 14px; color: #e2e8f0; }
+        .branch-code { font-size: 11px; color: #475569; margin-top: 2px; }
+        .branch-badges { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+        .badge-row { display: flex; align-items: center; gap: 5px; }
+        .badge-label { font-size: 10px; color: #475569; }
+
+        .badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 20px; text-transform: uppercase; letter-spacing: .4px; }
+        .badge-active { background: #14532d; color: #4ade80; }
+        .badge-inactive { background: #450a0a; color: #f87171; }
+        .badge-moderate { background: #451a03; color: #fbbf24; }
+        .badge-unknown { background: #1e2535; color: #64748b; }
+
+        .branch-hierarchy { display: flex; gap: 14px; font-size: 11px; color: #64748b; margin-bottom: 10px; flex-wrap: wrap; }
+        .branch-hierarchy b { color: #94a3b8; }
+
+        .persons-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+        .person-card { flex: 1; min-width: 130px; background: #141929; border: 1px solid #1e2a3a; border-radius: 6px; padding: 8px 10px; }
+        .person-role { font-size: 9px; text-transform: uppercase; letter-spacing: .6px; color: #475569; margin-bottom: 3px; }
+        .person-name { font-size: 12px; font-weight: 600; color: #e2e8f0; margin-bottom: 4px; }
+        .person-contact { display: block; font-size: 11px; color: #818cf8; text-decoration: none; margin-top: 2px; }
+        .person-contact:hover { text-decoration: underline; }
+        .branch-address { font-size: 11px; color: #475569; line-height: 1.4; border-top: 1px solid #1e2535; padding-top: 8px; }
+
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: #0f1117; }
+        ::-webkit-scrollbar-thumb { background: #252d3d; border-radius: 4px; }
+      `}</style>
+
+      <div className="app">
+        {/* TOP BAR */}
+        <div className="topbar">
+          <div className="topbar-brand">Know Your <span>DSA</span></div>
+          <label className="upload-btn">
+            ⬆ Upload Excel
+            <input className="upload-input" type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} />
+          </label>
+        </div>
+
+        {/* RIBBON */}
+        <div className="ribbon">
+          <div className="ribbon-card"><div className="ribbon-label">Total Branches</div><div className="ribbon-value">{metrics.total}</div></div>
+          <div className="ribbon-card"><div className="ribbon-label">Active</div><div className="ribbon-value clr-active">{metrics.active}</div></div>
+          <div className="ribbon-card"><div className="ribbon-label">Inactive</div><div className="ribbon-value clr-inactive">{metrics.inactive}</div></div>
+          <div className="ribbon-card"><div className="ribbon-label">Moderate</div><div className="ribbon-value clr-moderate">{metrics.moderate}</div></div>
+          <div className="ribbon-card"><div className="ribbon-label">Login Active %</div><div className="ribbon-value clr-pct">{metrics.loginPct}%</div></div>
+          <div className="ribbon-card"><div className="ribbon-label">Disb Active %</div><div className="ribbon-value clr-pct">{metrics.disbPct}%</div></div>
+        </div>
+
+        {/* BODY */}
+        <div className="body">
+          {/* SIDEBAR */}
+          <div className="sidebar">
+            <div>
+              <div className="sidebar-label">Search</div>
+              <input
+                type="text"
+                placeholder="Branch, manager, code…"
+                value={searchQuery}
+                onChange={e => { setSearchQuery(e.target.value); setDrillState(null); }}
+              />
+            </div>
+            <div>
+              <div className="sidebar-label">DSA</div>
+              <select value={selectedDSA} onChange={e => { setSelectedDSA(e.target.value); setSelectedState("All"); setSelectedCity("All"); setDrillState(null); }}>
+                {dsaList.map(d => <option key={d}>{d}</option>)}
+              </select>
+            </div>
+            <div>
+              <div className="sidebar-label">State</div>
+              <select value={selectedState} onChange={e => { setSelectedState(e.target.value); setSelectedCity("All"); setDrillState(null); }}>
+                {stateList.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <div className="sidebar-label">City</div>
+              <select value={selectedCity} onChange={e => { setSelectedCity(e.target.value); setDrillState(null); }}>
+                {cityList.map(c => <option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <div className="sidebar-label">Login Status</div>
+              <select value={loginStatus} onChange={e => { setLoginStatus(e.target.value); setDrillState(null); }}>
+                <option>All</option>
+                <option>Active</option>
+                <option>Inactive</option>
+              </select>
+            </div>
+            <div>
+              <div className="sidebar-label">Disb Status</div>
+              <select value={disbStatus} onChange={e => { setDisbStatus(e.target.value); setDrillState(null); }}>
+                <option>All</option>
+                <option>Active</option>
+                <option>Inactive</option>
+              </select>
+            </div>
+          </div>
+
+          {/* MAIN */}
+          <div className="main">
+            {filtered.length === 0 && <div className="empty">No branches match the selected filters.</div>}
+
+            {filtered.length > 0 && !drillState && (
+              <div className="states-grid">
+                {Object.entries(stateMap).map(([state, rows]) => (
+                  <StateCard
+                    key={state}
+                    state={state}
+                    rows={rows}
+                    loginCol={loginCol}
+                    disbCol={disbCol}
+                    onClick={setDrillState}
+                  />
+                ))}
+              </div>
+            )}
+
+            {drillState && (
+              <DrillView
+                state={drillState}
+                rows={drillRows}
+                loginCol={loginCol}
+                disbCol={disbCol}
+                onBack={() => setDrillState(null)}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
