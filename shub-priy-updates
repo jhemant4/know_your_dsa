@@ -1,0 +1,850 @@
+import { useState, useMemo, useRef, useEffect } from "react";
+import * as XLSX from "xlsx";
+
+const normalize = (v) => (v === null || v === undefined ? "" : String(v).trim());
+
+// ── Searchable Dropdown ──
+function SearchableSelect({ label, value, options, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const filtered = useMemo(() =>
+    options.filter(o => o.toLowerCase().includes(search.toLowerCase())),
+    [options, search]
+  );
+
+  const display = value === "All" ? `All ${label}s` : value;
+
+  return (
+    <div className="ssd-wrap" ref={ref}>
+      <div className="ssd-label">{label}</div>
+      <div className={`ssd-trigger ${open ? "open" : ""}`} onClick={() => { setOpen(o => !o); setSearch(""); }}>
+        <span className="ssd-trigger-text">{display}</span>
+        <span className="ssd-arrow">{open ? "▲" : "▼"}</span>
+      </div>
+      {open && (
+        <div className="ssd-dropdown">
+          <input
+            className="ssd-search"
+            autoFocus
+            placeholder={`Search ${label}…`}
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            onClick={e => e.stopPropagation()}
+          />
+          <div className="ssd-list">
+            {filtered.length === 0
+              ? <div className="ssd-empty">No results</div>
+              : filtered.map(o => (
+                <div
+                  key={o}
+                  className={`ssd-item ${value === o ? "selected" : ""}`}
+                  onClick={() => { onChange(o); setOpen(false); setSearch(""); }}
+                >
+                  {o === "All" ? `All ${label}s` : o}
+                  {value === o && <span className="ssd-check">✓</span>}
+                </div>
+              ))
+            }
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Badge ──
+const badge = (val) => {
+  const v = normalize(val).toLowerCase();
+  let cls = "badge-neutral";
+  if (v === "active") cls = "badge-active";
+  else if (v === "inactive") cls = "badge-inactive";
+  return <span className={`badge ${cls}`}>{normalize(val) || "—"}</span>;
+};
+
+// ── Person Card ──
+function PersonCard({ role, name, phone, email }) {
+  if (!name && !phone && !email) return null;
+  return (
+    <div className="person-card">
+      <div className="person-role">{role}</div>
+      <div className="person-name">{normalize(name) || "—"}</div>
+      {phone && <a className="person-contact" href={`tel:${phone}`}>📞 {normalize(phone)}</a>}
+      {email && <a className="person-contact" href={`mailto:${email}`}>✉ {normalize(email)}</a>}
+    </div>
+  );
+}
+
+// ── Branch Card ──
+function BranchCard({ row }) {
+  return (
+    <div className="branch-card">
+      {/* Header */}
+      <div className="bc-header">
+        <div>
+          <div className="bc-name">{normalize(row.BRANCH_NAME) || "—"}</div>
+          <div className="bc-meta">
+            <span className="bc-code">Code: {normalize(row["Branch Code"] || row.Branch_Code || row.BRANCH_CODE)}</span>
+            {normalize(row.DHFL_NAME) && <span className="bc-dhfl">{normalize(row.DHFL_NAME)}</span>}
+          </div>
+        </div>
+        <div className="bc-status-col">
+          <div className="bc-status-row"><span className="bc-status-label">Login</span>{badge(row["MTD Jun'26 Login Active - Andromeda"])}</div>
+          <div className="bc-status-row"><span className="bc-status-label">Disb</span>{badge(row["MTD Jun'26 Disbursal Active - Andromeda"])}</div>
+        </div>
+      </div>
+
+      {/* Product Flags */}
+      {(normalize(row.HL) || normalize(row.MSME)) && (
+        <div className="bc-products">
+          {normalize(row.HL) && <span className="product-tag">HL: {normalize(row.HL)}</span>}
+          {normalize(row.MSME) && <span className="product-tag">MSME: {normalize(row.MSME)}</span>}
+        </div>
+      )}
+
+      {/* Geography — HL */}
+      <div className="bc-section-title">HL Geography</div>
+      <div className="bc-geo-grid">
+        {[["Zone", row.ZONE_HL], ["Geo", row.GEO_HL], ["Cluster", row.CLUSTER_HL], ["Country", row.COUNTRY_HL]].map(([k, v]) =>
+          normalize(v) ? <div key={k} className="bc-geo-item"><span className="bc-geo-key">{k}</span><span className="bc-geo-val">{normalize(v)}</span></div> : null
+        )}
+      </div>
+
+      {/* Geography — MSME */}
+      {(normalize(row.ZONE_MSME) || normalize(row.GEO_MSME)) && <>
+        <div className="bc-section-title">MSME Geography</div>
+        <div className="bc-geo-grid">
+          {[["Zone", row.ZONE_MSME], ["Geo", row.GEO_MSME], ["Cluster", row.CLUSTER_MSME], ["Country", row.COUNTRY_MSME]].map(([k, v]) =>
+            normalize(v) ? <div key={k} className="bc-geo-item"><span className="bc-geo-key">{k}</span><span className="bc-geo-val">{normalize(v)}</span></div> : null
+          )}
+        </div>
+      </>}
+
+      {/* People Hierarchy (from Sheet 1) */}
+      {(row["Unit Head"] || row.Manager || row["Branch Manager Name"]) && <>
+        <div className="bc-section-title">Team</div>
+        <div className="bc-persons">
+          <PersonCard role="Unit Head" name={row["Unit Head"]} phone={row["Unit Head Contact Number"]} email={row["Unit Head Email -ID"]} />
+          <PersonCard role="Manager" name={row.Manager} phone={row["Manager Contact Number"]} email={row["Manager Email- ID"]} />
+          <PersonCard role="Branch Manager" name={row["Branch Manager Name"]} phone={row["Branch Manager Contact Number"]} email={row["Branch Manager Email- ID"]} />
+        </div>
+      </>}
+
+      {/* Address */}
+      {(normalize(row.BRANCH_ADDRESS) || normalize(row.Address)) && (
+        <div className="bc-address">
+          <span className="bc-address-icon">📍</span>
+          <span>{normalize(row.BRANCH_ADDRESS || row.Address)}{normalize(row.PINCODE) ? ` — ${normalize(row.PINCODE)}` : ""}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── State Card ──
+function StateCard({ state, rows, onClick }) {
+  const zones = new Set(rows.map(r => normalize(r.ZONE_HL)).filter(Boolean)).size;
+  const geos = new Set(rows.map(r => normalize(r.GEO_HL)).filter(Boolean)).size;
+  const clusters = new Set(rows.map(r => normalize(r.CLUSTER_HL)).filter(Boolean)).size;
+  const cities = new Set(rows.map(r => normalize(r.CITY || r.City)).filter(Boolean)).size;
+
+  // Unique zones list (up to 3 shown)
+  const zoneList = [...new Set(rows.map(r => normalize(r.ZONE_HL)).filter(Boolean))];
+
+  return (
+    <div className="state-card" onClick={() => onClick(state)}>
+      <div className="sc-header">
+        <div className="sc-state-name">{state}</div>
+        <div className="sc-branch-count">{rows.length}<span>branches</span></div>
+      </div>
+
+      <div className="sc-geo-summary">
+        <div className="sc-geo-row">
+          <span className="sc-geo-icon">🗺</span>
+          <span className="sc-geo-label">Zones</span>
+          <span className="sc-geo-val">{zones}</span>
+        </div>
+        <div className="sc-geo-row">
+          <span className="sc-geo-icon">📡</span>
+          <span className="sc-geo-label">Geos</span>
+          <span className="sc-geo-val">{geos}</span>
+        </div>
+        <div className="sc-geo-row">
+          <span className="sc-geo-icon">🏢</span>
+          <span className="sc-geo-label">Clusters</span>
+          <span className="sc-geo-val">{clusters}</span>
+        </div>
+        <div className="sc-geo-row">
+          <span className="sc-geo-icon">🏙</span>
+          <span className="sc-geo-label">Cities</span>
+          <span className="sc-geo-val">{cities}</span>
+        </div>
+      </div>
+
+      {zoneList.length > 0 && (
+        <div className="sc-zone-tags">
+          {zoneList.slice(0, 3).map(z => <span key={z} className="zone-tag">{z}</span>)}
+          {zoneList.length > 3 && <span className="zone-tag zone-tag-more">+{zoneList.length - 3} more</span>}
+        </div>
+      )}
+
+      <div className="sc-footer">Click to explore branches →</div>
+    </div>
+  );
+}
+
+// ── Drill View ──
+function DrillView({ state, rows, onBack }) {
+  const [expandedCities, setExpandedCities] = useState({});
+  const [expandedGeos, setExpandedGeos] = useState({});
+
+  const tree = useMemo(() => {
+    const map = {};
+    rows.forEach(row => {
+      const city = normalize(row.CITY || row.City) || "Unknown";
+      const geo = normalize(row.GEO_HL) || "—";
+      if (!map[city]) map[city] = {};
+      if (!map[city][geo]) map[city][geo] = [];
+      map[city][geo].push(row);
+    });
+    return map;
+  }, [rows]);
+
+  const toggleCity = (k) => setExpandedCities(p => ({ ...p, [k]: !p[k] }));
+  const toggleGeo = (k) => setExpandedGeos(p => ({ ...p, [k]: !p[k] }));
+
+  return (
+    <div className="drill-view">
+      <div className="drill-header">
+        <button className="back-btn" onClick={onBack}>← All States</button>
+        <div className="drill-title-block">
+          <span className="drill-state">{state}</span>
+          <span className="drill-count">{rows.length} branches</span>
+        </div>
+      </div>
+
+      {Object.entries(tree).map(([city, geos]) => {
+        const cityOpen = !!expandedCities[city];
+        const cityTotal = Object.values(geos).flat().length;
+        return (
+          <div key={city} className="city-block">
+            <div className={`city-header ${cityOpen ? "open" : ""}`} onClick={() => toggleCity(city)}>
+              <span className="tree-arrow">{cityOpen ? "▾" : "▸"}</span>
+              <span className="city-icon">🏙</span>
+              <span className="city-label">{city}</span>
+              <span className="city-count">{cityTotal}</span>
+            </div>
+
+            {cityOpen && Object.entries(geos).map(([geo, geoRows]) => {
+              const geoKey = `${city}__${geo}`;
+              const geoOpen = !!expandedGeos[geoKey];
+              return (
+                <div key={geo} className="geo-block">
+                  <div className={`geo-header ${geoOpen ? "open" : ""}`} onClick={() => toggleGeo(geoKey)}>
+                    <span className="tree-arrow">{geoOpen ? "▾" : "▸"}</span>
+                    <span className="geo-icon">📡</span>
+                    <span className="geo-label">{geo}</span>
+                    <span className="geo-count">{geoRows.length}</span>
+                  </div>
+                  {geoOpen && (
+                    <div className="branches-list">
+                      {geoRows.map((row, i) => <BranchCard key={i} row={row} />)}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Helpers ──
+const distinct = (rows, key) => ["All", ...new Set(rows.map(r => normalize(r[key])).filter(Boolean))];
+
+// ── Main App ──
+export default function KnowYourDSA() {
+  const [sheet1, setSheet1] = useState([]);   // master DSA data
+  const [sheet2, setSheet2] = useState([]);   // piramal activity data
+  const [joined, setJoined] = useState([]);   // merged rows
+
+  // Sidebar filters
+  const [selDSA, setSelDSA] = useState("All");
+  const [selState, setSelState] = useState("All");
+  const [selCity, setSelCity] = useState("All");
+  const [selBranchCode, setSelBranchCode] = useState("All");
+  const [selBranchName, setSelBranchName] = useState("All");
+  const [selZone, setSelZone] = useState("All");
+  const [selGeo, setSelGeo] = useState("All");
+  const [selCluster, setSelCluster] = useState("All");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [drillState, setDrillState] = useState(null);
+
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const wb = XLSX.read(ev.target.result, { type: "array" });
+
+      const ws1 = wb.Sheets[wb.SheetNames[0]];
+      const rows1 = XLSX.utils.sheet_to_json(ws1, { defval: "" });
+
+      const ws2 = wb.Sheets[wb.SheetNames[1]];
+      const rows2 = ws2 ? XLSX.utils.sheet_to_json(ws2, { defval: "" }) : [];
+
+      // Build lookup from Sheet 1 by Branch Code
+      const s1map = {};
+      rows1.forEach(r => {
+        const code = normalize(r["Branch Code"] || r.Branch_Code || r.BRANCH_CODE);
+        if (code) s1map[code] = r;
+      });
+
+      // Join: Sheet 2 is base, enrich with Sheet 1 people/contact data
+      const merged = rows2.map(r2 => {
+        const code = normalize(r2["Branch Code"] || r2.Branch_Code || r2.BRANCH_CODE);
+        const r1 = s1map[code] || {};
+        return { ...r1, ...r2 }; // Sheet 2 fields win for geography; Sheet 1 adds people
+      });
+
+      setSheet1(rows1);
+      setSheet2(rows2);
+      setJoined(merged);
+      resetFilters();
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const resetFilters = () => {
+    setSelDSA("All"); setSelState("All"); setSelCity("All");
+    setSelBranchCode("All"); setSelBranchName("All");
+    setSelZone("All"); setSelGeo("All"); setSelCluster("All");
+    setSearchQuery(""); setDrillState(null);
+  };
+
+  // Use SAMPLE data when nothing uploaded
+  const baseRows = joined.length > 0 ? joined : SAMPLE;
+
+  // Filter options (cascading)
+  const dsaOpts = useMemo(() => distinct(baseRows, "DSA Name"), [baseRows]);
+  const stateOpts = useMemo(() => {
+    let r = baseRows;
+    if (selDSA !== "All") r = r.filter(x => normalize(x["DSA Name"]) === selDSA);
+    return distinct(r, "STATE");
+  }, [baseRows, selDSA]);
+  const cityOpts = useMemo(() => {
+    let r = baseRows;
+    if (selDSA !== "All") r = r.filter(x => normalize(x["DSA Name"]) === selDSA);
+    if (selState !== "All") r = r.filter(x => normalize(x.STATE) === selState);
+    return distinct(r, "CITY");
+  }, [baseRows, selDSA, selState]);
+  const zoneOpts = useMemo(() => distinct(baseRows, "ZONE_HL"), [baseRows]);
+  const geoOpts = useMemo(() => {
+    let r = baseRows;
+    if (selZone !== "All") r = r.filter(x => normalize(x.ZONE_HL) === selZone);
+    return distinct(r, "GEO_HL");
+  }, [baseRows, selZone]);
+  const clusterOpts = useMemo(() => {
+    let r = baseRows;
+    if (selGeo !== "All") r = r.filter(x => normalize(x.GEO_HL) === selGeo);
+    return distinct(r, "CLUSTER_HL");
+  }, [baseRows, selGeo]);
+  const branchCodeOpts = useMemo(() => distinct(baseRows, "Branch Code"), [baseRows]);
+  const branchNameOpts = useMemo(() => distinct(baseRows, "BRANCH_NAME"), [baseRows]);
+
+  // Filtered rows
+  const filtered = useMemo(() => {
+    return baseRows.filter(r => {
+      if (selDSA !== "All" && normalize(r["DSA Name"]) !== selDSA) return false;
+      if (selState !== "All" && normalize(r.STATE) !== selState) return false;
+      if (selCity !== "All" && normalize(r.CITY) !== selCity) return false;
+      if (selZone !== "All" && normalize(r.ZONE_HL) !== selZone) return false;
+      if (selGeo !== "All" && normalize(r.GEO_HL) !== selGeo) return false;
+      if (selCluster !== "All" && normalize(r.CLUSTER_HL) !== selCluster) return false;
+      if (selBranchCode !== "All" && normalize(r["Branch Code"]) !== selBranchCode) return false;
+      if (selBranchName !== "All" && normalize(r.BRANCH_NAME) !== selBranchName) return false;
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const blob = [
+          r.BRANCH_NAME, r["DSA Name"], r.STATE, r.CITY,
+          r["Branch Code"], r.ZONE_HL, r.GEO_HL, r.CLUSTER_HL,
+          r["Unit Head"], r.Manager, r["Branch Manager Name"],
+          r.BRANCH_ADDRESS, r.DHFL_NAME, r.PINCODE,
+          r["Unit Head Contact Number"], r["Manager Contact Number"], r["Branch Manager Contact Number"]
+        ].map(normalize).join(" ").toLowerCase();
+        if (!blob.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [baseRows, selDSA, selState, selCity, selZone, selGeo, selCluster, selBranchCode, selBranchName, searchQuery]);
+
+  // Metrics
+  const metrics = useMemo(() => {
+    const total = filtered.length;
+    const loginActive = filtered.filter(r => normalize(r["MTD Jun'26 Login Active - Andromeda"]).toLowerCase() === "active").length;
+    const disbActive = filtered.filter(r => normalize(r["MTD Jun'26 Disbursal Active - Andromeda"]).toLowerCase() === "active").length;
+    return { total, loginActive, disbActive };
+  }, [filtered]);
+
+  // State grouped
+  const stateMap = useMemo(() => {
+    const map = {};
+    filtered.forEach(r => {
+      const s = normalize(r.STATE) || "Unknown";
+      if (!map[s]) map[s] = [];
+      map[s].push(r);
+    });
+    return map;
+  }, [filtered]);
+
+  const drillRows = drillState ? (stateMap[drillState] || []) : [];
+
+  const clearFilter = () => resetFilters();
+
+  const activeFilterCount = [selDSA, selState, selCity, selZone, selGeo, selCluster, selBranchCode, selBranchName]
+    .filter(v => v !== "All").length + (searchQuery.trim() ? 1 : 0);
+
+  return (
+    <>
+      <style>{CSS}</style>
+      <div className="app">
+
+        {/* TOP BAR */}
+        <header className="topbar">
+          <div className="topbar-left">
+            <div className="topbar-logo">
+              <span className="logo-icon">◈</span>
+              <span className="logo-text">DSA <strong>Intelligence</strong></span>
+            </div>
+            <div className="topbar-divider" />
+            <span className="topbar-sub">Piramal Branch Network</span>
+          </div>
+          <div className="topbar-right">
+            {activeFilterCount > 0 && (
+              <button className="clear-btn" onClick={clearFilter}>
+                ✕ Clear filters ({activeFilterCount})
+              </button>
+            )}
+            <label className="upload-btn">
+              <span>⬆</span> Upload Excel
+              <input type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} style={{ display: "none" }} />
+            </label>
+          </div>
+        </header>
+
+        {/* RIBBON */}
+        <div className="ribbon">
+          <div className="ribbon-item">
+            <div className="ribbon-label">Total Branches</div>
+            <div className="ribbon-value">{metrics.total}</div>
+          </div>
+          <div className="ribbon-divider" />
+          <div className="ribbon-item">
+            <div className="ribbon-label">Login Active</div>
+            <div className="ribbon-value clr-green">{metrics.loginActive}</div>
+          </div>
+          <div className="ribbon-divider" />
+          <div className="ribbon-item">
+            <div className="ribbon-label">Disbursal Active</div>
+            <div className="ribbon-value clr-blue">{metrics.disbActive}</div>
+          </div>
+          <div className="ribbon-divider" />
+          <div className="ribbon-item">
+            <div className="ribbon-label">States</div>
+            <div className="ribbon-value clr-slate">{Object.keys(stateMap).length}</div>
+          </div>
+          <div className="ribbon-divider" />
+          <div className="ribbon-item">
+            <div className="ribbon-label">Zones (HL)</div>
+            <div className="ribbon-value clr-slate">{new Set(filtered.map(r => normalize(r.ZONE_HL)).filter(Boolean)).size}</div>
+          </div>
+        </div>
+
+        {/* BODY */}
+        <div className="body">
+
+          {/* SIDEBAR */}
+          <aside className="sidebar">
+            <div className="sidebar-search-wrap">
+              <span className="sidebar-search-icon">⌕</span>
+              <input
+                className="sidebar-search"
+                type="text"
+                placeholder="Search branches, managers…"
+                value={searchQuery}
+                onChange={e => { setSearchQuery(e.target.value); setDrillState(null); }}
+              />
+            </div>
+
+            <div className="sidebar-filters">
+              <SearchableSelect label="DSA" value={selDSA} options={dsaOpts} onChange={v => { setSelDSA(v); setSelState("All"); setSelCity("All"); setDrillState(null); }} />
+              <SearchableSelect label="State" value={selState} options={stateOpts} onChange={v => { setSelState(v); setSelCity("All"); setDrillState(null); }} />
+              <SearchableSelect label="City" value={selCity} options={cityOpts} onChange={v => { setSelCity(v); setDrillState(null); }} />
+              <SearchableSelect label="Zone" value={selZone} options={zoneOpts} onChange={v => { setSelZone(v); setSelGeo("All"); setSelCluster("All"); setDrillState(null); }} />
+              <SearchableSelect label="Geo" value={selGeo} options={geoOpts} onChange={v => { setSelGeo(v); setSelCluster("All"); setDrillState(null); }} />
+              <SearchableSelect label="Cluster" value={selCluster} options={clusterOpts} onChange={v => { setSelCluster(v); setDrillState(null); }} />
+              <SearchableSelect label="Branch Code" value={selBranchCode} options={branchCodeOpts} onChange={v => { setSelBranchCode(v); setDrillState(null); }} />
+              <SearchableSelect label="Branch Name" value={selBranchName} options={branchNameOpts} onChange={v => { setSelBranchName(v); setDrillState(null); }} />
+            </div>
+          </aside>
+
+          {/* MAIN */}
+          <main className="main">
+            {filtered.length === 0 && (
+              <div className="empty-state">
+                <div className="empty-icon">◎</div>
+                <div className="empty-title">No branches found</div>
+                <div className="empty-sub">Adjust your filters or upload a new file</div>
+              </div>
+            )}
+
+            {filtered.length > 0 && !drillState && (
+              <div className="states-grid">
+                {Object.entries(stateMap).map(([state, rows]) => (
+                  <StateCard key={state} state={state} rows={rows} onClick={setDrillState} />
+                ))}
+              </div>
+            )}
+
+            {drillState && (
+              <DrillView state={drillState} rows={drillRows} onBack={() => setDrillState(null)} />
+            )}
+          </main>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Sample Data (fallback) ──
+const SAMPLE = [
+  { "DSA Name": "Andromeda", STATE: "West Bengal", CITY: "Kolkata", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", Manager: "Sajjad Hussain", "Manager Contact Number": "8178732091", "Branch Manager Name": "Sajjad Hussain", "Branch Manager Contact Number": "8510061784", BRANCH_ADDRESS: "Office No.801, 8th floor, Kamdhenu Building, 75-C Park Street, Kolkata-700016", BRANCH_NAME: "Dumdum", "Branch Code": "6846", ZONE_HL: "East", GEO_HL: "West Bengal", CLUSTER_HL: "Dumdum", DHFL_NAME: "Piramal", PINCODE: "700016", HL: "Yes", MSME: "No", "MTD Jun'26 Login Active - Andromeda": "Inactive", "MTD Jun'26 Disbursal Active - Andromeda": "Inactive" },
+  { "DSA Name": "Andromeda", STATE: "West Bengal", CITY: "Kolkata", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", Manager: "Sajjad Hussain", "Manager Contact Number": "8178732091", "Branch Manager Name": "Sajjad Hussain", "Branch Manager Contact Number": "8510061784", BRANCH_ADDRESS: "Office No.801, 8th floor, Kamdhenu Building, 75-C Park Street, Kolkata-700016", BRANCH_NAME: "Kolkata - Rashbehari", "Branch Code": "6219", ZONE_HL: "East", GEO_HL: "West Bengal", CLUSTER_HL: "Kolkata", DHFL_NAME: "Piramal", PINCODE: "700029", HL: "Yes", MSME: "Yes", "MTD Jun'26 Login Active - Andromeda": "Active", "MTD Jun'26 Disbursal Active - Andromeda": "Inactive" },
+  { "DSA Name": "Andromeda", STATE: "Uttar Pradesh", CITY: "Ghaziabad", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", Manager: "Yogesh Sharma", "Manager Contact Number": "9772205556", "Branch Manager Name": "Pankaj Bhardwaj", "Branch Manager Contact Number": "9990710500", BRANCH_ADDRESS: "1007 S-3 Tower Cloud-9 Sector-01 Vaishali Ghaziabad", BRANCH_NAME: "Ghaziabad", "Branch Code": "6294", ZONE_HL: "North 1", GEO_HL: "NCR 1", CLUSTER_HL: "Ghaziabad", DHFL_NAME: "Piramal", PINCODE: "201012", HL: "Yes", MSME: "No", "MTD Jun'26 Login Active - Andromeda": "Active", "MTD Jun'26 Disbursal Active - Andromeda": "Active" },
+  { "DSA Name": "Andromeda", STATE: "Uttar Pradesh", CITY: "Agra", "Unit Head": "Anit Vijayvergia", "Unit Head Contact Number": "9783824350", Manager: "Yogesh Sharma", "Manager Contact Number": "9772205556", "Branch Manager Name": "Amit Pachauri", "Branch Manager Contact Number": "7520782114", BRANCH_ADDRESS: "Office NO. S-2, 2nd Floor Block NO.41/4A, Friends Tower, Sanjay Place, Agra-282002", BRANCH_NAME: "Agra", "Branch Code": "6251", ZONE_HL: "North 2", GEO_HL: "West UP", CLUSTER_HL: "Agra", DHFL_NAME: "Piramal", PINCODE: "282002", HL: "Yes", MSME: "Yes", "MTD Jun'26 Login Active - Andromeda": "Active", "MTD Jun'26 Disbursal Active - Andromeda": "Active" },
+  { "DSA Name": "Andromeda", STATE: "Maharashtra", CITY: "Mumbai", "Unit Head": "Rahul Mehta", "Unit Head Contact Number": "9820012345", Manager: "Priya Shah", "Manager Contact Number": "9920098765", "Branch Manager Name": "Ravi Kumar", "Branch Manager Contact Number": "8800123456", BRANCH_ADDRESS: "Level 5, Bandra-Kurla Complex, Mumbai - 400051", BRANCH_NAME: "BKC Mumbai", "Branch Code": "6500", ZONE_HL: "West", GEO_HL: "Maharashtra", CLUSTER_HL: "Mumbai", DHFL_NAME: "Piramal", PINCODE: "400051", HL: "Yes", MSME: "Yes", "MTD Jun'26 Login Active - Andromeda": "Active", "MTD Jun'26 Disbursal Active - Andromeda": "Active" },
+  { "DSA Name": "Andromeda", STATE: "Karnataka", CITY: "Bengaluru", "Unit Head": "Suresh Nair", "Unit Head Contact Number": "9845012345", Manager: "Kavitha Rao", "Manager Contact Number": "9741234567", "Branch Manager Name": "Deepak S", "Branch Manager Contact Number": "8971234567", BRANCH_ADDRESS: "3rd Floor, Prestige Tower, MG Road, Bengaluru - 560001", BRANCH_NAME: "MG Road Bengaluru", "Branch Code": "6601", ZONE_HL: "South", GEO_HL: "Karnataka", CLUSTER_HL: "Bengaluru", DHFL_NAME: "Piramal", PINCODE: "560001", HL: "Yes", MSME: "No", "MTD Jun'26 Login Active - Andromeda": "Inactive", "MTD Jun'26 Disbursal Active - Andromeda": "Active" },
+];
+
+// ── CSS ──
+const CSS = `
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #F0F2F5; color: #1A2332; }
+
+  .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+  /* ── TOP BAR ── */
+  .topbar {
+    background: #FFFFFF;
+    border-bottom: 1px solid #E2E6EA;
+    padding: 0 24px;
+    height: 56px;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .topbar-left { display: flex; align-items: center; gap: 16px; }
+  .topbar-logo { display: flex; align-items: center; gap: 8px; }
+  .logo-icon { font-size: 20px; color: #1A56DB; }
+  .logo-text { font-size: 16px; color: #374151; letter-spacing: -0.3px; }
+  .logo-text strong { color: #1A2332; font-weight: 700; }
+  .topbar-divider { width: 1px; height: 20px; background: #E2E6EA; }
+  .topbar-sub { font-size: 12px; color: #6B7280; font-weight: 500; letter-spacing: 0.3px; text-transform: uppercase; }
+  .topbar-right { display: flex; align-items: center; gap: 10px; }
+  .clear-btn {
+    background: #FEF3C7; color: #92400E; border: 1px solid #FCD34D;
+    padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    cursor: pointer; transition: background .15s;
+  }
+  .clear-btn:hover { background: #FDE68A; }
+  .upload-btn {
+    background: #1A56DB; color: #fff; border: none;
+    padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600;
+    cursor: pointer; display: flex; align-items: center; gap: 6px;
+    transition: background .15s;
+  }
+  .upload-btn:hover { background: #1648C0; }
+
+  /* ── RIBBON ── */
+  .ribbon {
+    background: #FFFFFF;
+    border-bottom: 1px solid #E2E6EA;
+    padding: 0 24px;
+    display: flex; align-items: center;
+    height: 64px; flex-shrink: 0;
+    gap: 0;
+  }
+  .ribbon-item { padding: 0 28px 0 0; }
+  .ribbon-item:first-child { padding-left: 0; }
+  .ribbon-label { font-size: 11px; color: #6B7280; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 500; margin-bottom: 3px; }
+  .ribbon-value { font-size: 24px; font-weight: 700; color: #1A2332; line-height: 1; }
+  .ribbon-value.clr-green { color: #047857; }
+  .ribbon-value.clr-blue { color: #1A56DB; }
+  .ribbon-value.clr-slate { color: #4B5563; }
+  .ribbon-divider { width: 1px; height: 36px; background: #E2E6EA; margin: 0 28px 0 0; flex-shrink: 0; }
+
+  /* ── BODY ── */
+  .body { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── SIDEBAR ── */
+  .sidebar {
+    width: 240px;
+    background: #FFFFFF;
+    border-right: 1px solid #E2E6EA;
+    display: flex; flex-direction: column;
+    overflow-y: auto; flex-shrink: 0;
+    padding: 16px 0;
+  }
+  .sidebar-search-wrap {
+    display: flex; align-items: center; gap: 8px;
+    margin: 0 12px 16px;
+    background: #F9FAFB;
+    border: 1px solid #E2E6EA;
+    border-radius: 8px;
+    padding: 8px 12px;
+  }
+  .sidebar-search-icon { color: #9CA3AF; font-size: 16px; }
+  .sidebar-search {
+    border: none; background: transparent; outline: none;
+    font-size: 13px; color: #374151; width: 100%;
+  }
+  .sidebar-search::placeholder { color: #9CA3AF; }
+  .sidebar-filters { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
+
+  /* ── SEARCHABLE SELECT ── */
+  .ssd-wrap { position: relative; }
+  .ssd-label {
+    font-size: 10px; color: #9CA3AF; text-transform: uppercase;
+    letter-spacing: 0.6px; font-weight: 600;
+    padding: 10px 8px 4px;
+  }
+  .ssd-trigger {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px; border-radius: 6px; cursor: pointer;
+    background: #F9FAFB; border: 1px solid #E2E6EA;
+    font-size: 13px; color: #374151;
+    transition: border-color .15s, background .15s;
+    user-select: none;
+  }
+  .ssd-trigger:hover { border-color: #93C5FD; background: #EFF6FF; }
+  .ssd-trigger.open { border-color: #1A56DB; background: #EFF6FF; }
+  .ssd-trigger-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+  .ssd-arrow { font-size: 9px; color: #9CA3AF; flex-shrink: 0; margin-left: 4px; }
+  .ssd-dropdown {
+    position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+    background: #FFFFFF; border: 1px solid #E2E6EA;
+    border-radius: 8px; z-index: 200;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+    overflow: hidden;
+  }
+  .ssd-search {
+    width: 100%; border: none; border-bottom: 1px solid #E2E6EA;
+    padding: 9px 12px; font-size: 12px; color: #374151; outline: none;
+    background: #F9FAFB;
+  }
+  .ssd-list { max-height: 200px; overflow-y: auto; }
+  .ssd-item {
+    padding: 8px 12px; font-size: 12px; color: #374151; cursor: pointer;
+    display: flex; align-items: center; justify-content: space-between;
+    transition: background .1s;
+  }
+  .ssd-item:hover { background: #EFF6FF; }
+  .ssd-item.selected { background: #EFF6FF; color: #1A56DB; font-weight: 600; }
+  .ssd-check { color: #1A56DB; font-size: 11px; }
+  .ssd-empty { padding: 12px; font-size: 12px; color: #9CA3AF; text-align: center; }
+
+  /* ── MAIN ── */
+  .main { flex: 1; overflow-y: auto; padding: 20px; }
+
+  /* ── EMPTY STATE ── */
+  .empty-state { text-align: center; padding: 80px 20px; }
+  .empty-icon { font-size: 36px; color: #D1D5DB; margin-bottom: 12px; }
+  .empty-title { font-size: 16px; font-weight: 600; color: #374151; margin-bottom: 6px; }
+  .empty-sub { font-size: 13px; color: #9CA3AF; }
+
+  /* ── STATES GRID ── */
+  .states-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+  }
+
+  /* ── STATE CARD ── */
+  .state-card {
+    background: #FFFFFF;
+    border: 1px solid #E2E6EA;
+    border-radius: 10px;
+    padding: 18px;
+    cursor: pointer;
+    transition: box-shadow .2s, border-color .2s, transform .15s;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .state-card:hover {
+    box-shadow: 0 6px 20px rgba(26,86,219,0.1);
+    border-color: #93C5FD;
+    transform: translateY(-2px);
+  }
+  .sc-header { display: flex; justify-content: space-between; align-items: flex-start; }
+  .sc-state-name { font-size: 16px; font-weight: 700; color: #1A2332; }
+  .sc-branch-count { text-align: right; }
+  .sc-branch-count { font-size: 22px; font-weight: 800; color: #1A56DB; line-height: 1; }
+  .sc-branch-count span { display: block; font-size: 10px; font-weight: 400; color: #9CA3AF; }
+
+  .sc-geo-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .sc-geo-row {
+    display: flex; align-items: center; gap: 6px;
+    background: #F9FAFB; border-radius: 6px; padding: 7px 10px;
+    border: 1px solid #F3F4F6;
+  }
+  .sc-geo-icon { font-size: 12px; }
+  .sc-geo-label { font-size: 11px; color: #6B7280; flex: 1; }
+  .sc-geo-val { font-size: 14px; font-weight: 700; color: #1A2332; }
+
+  .sc-zone-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+  .zone-tag {
+    background: #EFF6FF; color: #1A56DB; border: 1px solid #BFDBFE;
+    font-size: 10px; font-weight: 600; padding: 3px 8px; border-radius: 20px;
+    letter-spacing: 0.2px;
+  }
+  .zone-tag-more { background: #F3F4F6; color: #6B7280; border-color: #E5E7EB; }
+
+  .sc-footer {
+    font-size: 11px; color: #1A56DB; font-weight: 600;
+    border-top: 1px solid #F3F4F6; padding-top: 10px;
+    text-align: right;
+  }
+
+  /* ── DRILL VIEW ── */
+  .drill-view { display: flex; flex-direction: column; gap: 10px; }
+  .drill-header {
+    display: flex; align-items: center; gap: 14px;
+    background: #FFFFFF; border: 1px solid #E2E6EA;
+    border-radius: 8px; padding: 12px 18px; margin-bottom: 6px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  }
+  .back-btn {
+    background: #F3F4F6; border: 1px solid #E2E6EA; color: #374151;
+    padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    cursor: pointer; transition: background .15s;
+  }
+  .back-btn:hover { background: #E5E7EB; }
+  .drill-title-block { display: flex; align-items: center; gap: 10px; }
+  .drill-state { font-size: 16px; font-weight: 700; color: #1A2332; }
+  .drill-count {
+    font-size: 11px; background: #EFF6FF; color: #1A56DB;
+    padding: 3px 10px; border-radius: 20px; font-weight: 600;
+  }
+
+  /* ── CITY / GEO TREE ── */
+  .city-block { margin-bottom: 6px; }
+  .city-header {
+    display: flex; align-items: center; gap: 8px;
+    background: #FFFFFF; border: 1px solid #E2E6EA; border-radius: 7px;
+    padding: 10px 14px; cursor: pointer; user-select: none;
+    font-size: 13px; font-weight: 600; color: #374151;
+    transition: background .15s, border-color .15s;
+    margin-bottom: 4px;
+  }
+  .city-header:hover { background: #F9FAFB; }
+  .city-header.open { border-color: #93C5FD; background: #EFF6FF; color: #1A56DB; }
+  .tree-arrow { font-size: 10px; color: #9CA3AF; }
+  .city-icon, .geo-icon { font-size: 13px; }
+  .city-label { flex: 1; }
+  .city-count {
+    font-size: 11px; background: #F3F4F6; color: #6B7280;
+    padding: 2px 8px; border-radius: 20px; font-weight: 600;
+  }
+
+  .geo-block { margin: 0 0 4px 20px; }
+  .geo-header {
+    display: flex; align-items: center; gap: 8px;
+    background: #FAFBFC; border: 1px solid #E9ECEF; border-radius: 6px;
+    padding: 8px 12px; cursor: pointer; user-select: none;
+    font-size: 12px; color: #4B5563;
+    transition: background .15s; margin-bottom: 4px;
+  }
+  .geo-header:hover { background: #F3F4F6; }
+  .geo-header.open { border-color: #93C5FD; color: #1A56DB; background: #EFF6FF; }
+  .geo-label { flex: 1; font-weight: 500; }
+  .geo-count {
+    font-size: 10px; background: #F3F4F6; color: #9CA3AF;
+    padding: 1px 6px; border-radius: 20px; font-weight: 600;
+  }
+
+  /* ── BRANCHES LIST ── */
+  .branches-list { display: flex; flex-direction: column; gap: 10px; margin: 0 0 8px 20px; }
+
+  /* ── BRANCH CARD ── */
+  .branch-card {
+    background: #FFFFFF; border: 1px solid #E2E6EA;
+    border-radius: 8px; padding: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .bc-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; gap: 12px; }
+  .bc-name { font-size: 14px; font-weight: 700; color: #1A2332; margin-bottom: 4px; }
+  .bc-meta { display: flex; gap: 10px; flex-wrap: wrap; }
+  .bc-code { font-size: 11px; color: #6B7280; background: #F3F4F6; padding: 2px 7px; border-radius: 4px; font-weight: 500; }
+  .bc-dhfl { font-size: 11px; color: #1A56DB; background: #EFF6FF; padding: 2px 7px; border-radius: 4px; font-weight: 500; border: 1px solid #BFDBFE; }
+  .bc-status-col { display: flex; flex-direction: column; gap: 5px; align-items: flex-end; flex-shrink: 0; }
+  .bc-status-row { display: flex; align-items: center; gap: 6px; }
+  .bc-status-label { font-size: 10px; color: #9CA3AF; font-weight: 500; }
+
+  .badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.3px; }
+  .badge-active { background: #DCFCE7; color: #166534; border: 1px solid #BBF7D0; }
+  .badge-inactive { background: #FEE2E2; color: #991B1B; border: 1px solid #FECACA; }
+  .badge-neutral { background: #F3F4F6; color: #6B7280; border: 1px solid #E5E7EB; }
+
+  .bc-products { display: flex; gap: 6px; margin-bottom: 12px; }
+  .product-tag {
+    font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 4px;
+    background: #F0FDF4; color: #166534; border: 1px solid #BBF7D0;
+  }
+
+  .bc-section-title {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px;
+    color: #9CA3AF; font-weight: 600; margin: 12px 0 8px;
+    padding-bottom: 6px; border-bottom: 1px solid #F3F4F6;
+  }
+
+  .bc-geo-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .bc-geo-item {
+    display: flex; flex-direction: column; gap: 1px;
+    background: #F9FAFB; border-radius: 5px; padding: 6px 10px;
+    border: 1px solid #F3F4F6;
+  }
+  .bc-geo-key { font-size: 10px; color: #9CA3AF; font-weight: 500; }
+  .bc-geo-val { font-size: 12px; font-weight: 600; color: #374151; }
+
+  .bc-persons { display: flex; gap: 8px; flex-wrap: wrap; }
+  .person-card {
+    flex: 1; min-width: 140px;
+    background: #F9FAFB; border: 1px solid #E9ECEF;
+    border-radius: 6px; padding: 10px 12px;
+  }
+  .person-role { font-size: 9px; text-transform: uppercase; letter-spacing: 0.6px; color: #9CA3AF; font-weight: 600; margin-bottom: 4px; }
+  .person-name { font-size: 12px; font-weight: 600; color: #1A2332; margin-bottom: 5px; }
+  .person-contact { display: block; font-size: 11px; color: #1A56DB; text-decoration: none; margin-top: 3px; }
+  .person-contact:hover { text-decoration: underline; }
+
+  .bc-address {
+    display: flex; gap: 6px; align-items: flex-start;
+    font-size: 11px; color: #6B7280; line-height: 1.5;
+    border-top: 1px solid #F3F4F6; padding-top: 10px; margin-top: 12px;
+  }
+  .bc-address-icon { flex-shrink: 0; }
+
+  /* ── SCROLLBAR ── */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: #F3F4F6; }
+  ::-webkit-scrollbar-thumb { background: #D1D5DB; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #9CA3AF; }
+`;
