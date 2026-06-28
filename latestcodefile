@@ -1,0 +1,862 @@
+import { useState, useMemo, useRef, useEffect } from "react";
+import * as XLSX from "xlsx";
+
+// ─────────────────────────────────────────────
+// UTILITIES
+// ─────────────────────────────────────────────
+const n = (v) => (v === null || v === undefined ? "" : String(v).trim());
+
+const toStr = (v) => {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "number") return String(Math.round(v));
+  return String(v).trim();
+};
+
+// ─────────────────────────────────────────────
+// SEARCHABLE DROPDOWN
+// ─────────────────────────────────────────────
+function SearchableSelect({ label, value, options, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  const filtered = useMemo(
+    () => options.filter((o) => o.toLowerCase().includes(search.toLowerCase())),
+    [options, search]
+  );
+
+  return (
+    <div className="ssd" ref={ref}>
+      <div className="ssd-label">{label}</div>
+      <div className={`ssd-trigger ${open ? "open" : ""}`} onClick={() => { setOpen((o) => !o); setSearch(""); }}>
+        <span className="ssd-val">{value === "All" ? `All` : value}</span>
+        <span className="ssd-caret">{open ? "▲" : "▼"}</span>
+      </div>
+      {open && (
+        <div className="ssd-drop">
+          <input
+            className="ssd-input"
+            autoFocus
+            placeholder={`Search ${label}…`}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+          />
+          <div className="ssd-list">
+            {filtered.length === 0
+              ? <div className="ssd-none">No results</div>
+              : filtered.map((o) => (
+                <div
+                  key={o}
+                  className={`ssd-item ${value === o ? "active" : ""}`}
+                  onClick={() => { onChange(o); setOpen(false); setSearch(""); }}
+                >
+                  {o === "All" ? `All ${label}s` : o}
+                  {value === o && <span className="ssd-tick">✓</span>}
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// BADGE
+// ─────────────────────────────────────────────
+function Badge({ val }) {
+  const v = n(val).toLowerCase();
+  const cls = v === "active" ? "b-active" : v === "inactive" ? "b-inactive" : "b-neutral";
+  return <span className={`badge ${cls}`}>{n(val) || "—"}</span>;
+}
+
+// ─────────────────────────────────────────────
+// PERSON CARD
+// ─────────────────────────────────────────────
+function PersonCard({ role, name, phone, email }) {
+  const nm = n(name), ph = toStr(phone), em = n(email);
+  if (!nm && !ph && !em) return null;
+  return (
+    <div className="person-card">
+      <div className="person-role">{role}</div>
+      <div className="person-name">{nm || "—"}</div>
+      {ph && <a className="person-link" href={`tel:${ph}`}>📞 {ph}</a>}
+      {em && <a className="person-link" href={`mailto:${em}`}>✉ {em}</a>}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// BRANCH CARD  (Sheet1 people + Sheet2 activity/address)
+// ─────────────────────────────────────────────
+function BranchCard({ row }) {
+  const loginVal = n(row["MTD Jun'26 Login Active - Andromeda"]);
+  const disbVal = n(row["MTD Jun'26 Disbursal Active - Andromeda"]);
+  //const hasPiramal = loginVal || disbVal || n(row.BRANCH_ADDRESS) || n(row.PINCODE);
+
+  return (
+    <div className="branch-card">
+
+      {/* ── Header ── */}
+      <div className="bc-head">
+        <div>
+          <div className="bc-name">{n(row.BRANCH_NAME) || "—"}</div>
+          <div className="bc-chips">
+            <span className="chip chip-code">#{toStr(row["Branch Code"])}</span>
+            {n(row.ZONE_HL) && <span className="chip chip-zone">{n(row.ZONE_HL)}</span>}
+          </div>
+        </div>
+        {/* {hasPiramal && (
+  <div className="bc-status">
+    <div className="bc-status-row"><span className="bc-slabel">Login</span><Badge val={loginVal} /></div>
+    <div className="bc-status-row"><span className="bc-slabel">Disb</span><Badge val={disbVal} /></div>
+  </div>
+)} */}
+      </div>
+
+      {/* ── HL Geography ── */}
+      <div className="bc-section-title">HL Geography</div>
+      <div className="geo-grid">
+        {[["Zone", row.ZONE_HL], ["Geo", row.GEO_HL], ["Cluster", row.CLUSTER_HL], ["Country", row.COUNTRY_HL]].map(([k, v]) =>
+          n(v) ? <div key={k} className="geo-cell"><span className="geo-key">{k}</span><span className="geo-val">{n(v)}</span></div> : null
+        )}
+      </div>
+
+      {/* ── MSME Geography ── */}
+      {(n(row.ZONE_MSME) || n(row.GEO_MSME)) && <>
+        <div className="bc-section-title">MSME Geography</div>
+        <div className="geo-grid">
+          {[["Zone", row.ZONE_MSME], ["Geo", row.GEO_MSME], ["Cluster", row.CLUSTER_MSME], ["Country", row.COUNTRY_MSME]].map(([k, v]) =>
+            n(v) ? <div key={k} className="geo-cell"><span className="geo-key">{k}</span><span className="geo-val">{n(v)}</span></div> : null
+          )}
+        </div>
+      </>}
+
+      {/* ── People (from Sheet 1) ── */}
+      {(row["Unit Head Name"] || row["Manager Name"] || row["Branch Manager Name"]) && <>
+        <div className="bc-section-title">Team Hierarchy</div>
+        <div className="bc-persons">
+          <PersonCard role="Unit Head" name={row["Unit Head Name"]} phone={row["Unit Head Contact Number"]} email={row["Unit Head Email -ID"]} />
+          <PersonCard role="Manager" name={row["Manager Name"]} phone={row["Manager Contact Number"]} email={row["Manager Email- ID"]} />
+          <PersonCard role="Branch Manager" name={row["Branch Manager Name"]} phone={row["Branch Manager Contact Number"]} email={row["Branch Manager Email- ID"]} />
+        </div>
+      </>}
+
+      {/* ── Address (from Sheet 2 if available, else Sheet 1) ── */}
+      {(n(row.BRANCH_ADDRESS) || n(row.Address)) && (
+        <div className="bc-address">
+          <span>📍</span>
+          <span>{n(row.BRANCH_ADDRESS || row.Address)}{n(row.PINCODE) ? `, ${n(row.PINCODE)}` : ""}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// STATE CARD  (central grid)
+// ─────────────────────────────────────────────
+function StateCard({ state, rows, onClick }) {
+  const zones = [...new Set(rows.map((r) => n(r.ZONE_HL)).filter(Boolean))];
+  const geoCount = new Set(rows.map((r) => n(r.GEO_HL)).filter(Boolean)).size;
+  const clCount = new Set(rows.map((r) => n(r.CLUSTER_HL)).filter(Boolean)).size;
+  const cityCount = new Set(rows.map((r) => n(r.CITY || r.City)).filter(Boolean)).size;
+  const dsaCount = new Set(rows.map((r) => n(r["DSA Name"])).filter(Boolean)).size;
+
+  return (
+    <div className="state-card" onClick={() => onClick(state)}>
+      <div className="sc-head">
+        <div className="sc-state">{state}</div>
+        <div className="sc-total">{rows.length}<span>branches</span></div>
+      </div>
+
+      <div className="sc-geo">
+        {[["🗺", "Zones", zones.length], ["📡", "Geos", geoCount], ["🏢", "Clusters", clCount], ["🏙", "Cities", cityCount]].map(([icon, label, val]) => (
+          <div key={label} className="sc-geo-cell">
+            <span className="sc-geo-icon">{icon}</span>
+            <span className="sc-geo-label">{label}</span>
+            <span className="sc-geo-num">{val}</span>
+          </div>
+        ))}
+      </div>
+
+      {zones.length > 0 && (
+        <div className="sc-tags">
+          {zones.slice(0, 3).map((z) => <span key={z} className="sc-tag">{z}</span>)}
+          {zones.length > 3 && <span className="sc-tag sc-tag-more">+{zones.length - 3}</span>}
+        </div>
+      )}
+
+      <div className="sc-dsa-row">
+        <span className="sc-dsa-label">{dsaCount} {dsaCount === 1 ? "DSA" : "DSAs"}</span>
+        <span className="sc-drill">Explore branches →</span>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// DRILL VIEW
+// ─────────────────────────────────────────────
+function DrillView({ state, rows, onBack }) {
+  const [openCities, setOpenCities] = useState({});
+  const [openGeos, setOpenGeos] = useState({});
+
+  const tree = useMemo(() => {
+    const map = {};
+    rows.forEach((r) => {
+      const city = n(r.CITY || r.City) || "Unknown";
+      const geo = n(r.GEO_HL) || "—";
+      if (!map[city]) map[city] = {};
+      if (!map[city][geo]) map[city][geo] = [];
+      map[city][geo].push(r);
+    });
+    return map;
+  }, [rows]);
+
+  return (
+    <div className="drill">
+      <div className="drill-bar">
+        <button className="back-btn" onClick={onBack}>← All States</button>
+        <span className="drill-state">{state}</span>
+        <span className="drill-pill">{rows.length} branches</span>
+      </div>
+
+      {Object.entries(tree).map(([city, geos]) => {
+        const cityOpen = !!openCities[city];
+        const total = Object.values(geos).flat().length;
+        return (
+          <div key={city} className="city-block">
+            <div className={`city-row ${cityOpen ? "open" : ""}`} onClick={() => setOpenCities((p) => ({ ...p, [city]: !p[city] }))}>
+              <span className="tree-caret">{cityOpen ? "▾" : "▸"}</span>
+              <span className="city-icon">🏙</span>
+              <span className="city-name">{city}</span>
+              <span className="city-pill">{total}</span>
+            </div>
+
+            {cityOpen && Object.entries(geos).map(([geo, geoRows]) => {
+              const key = `${city}__${geo}`;
+              const geoOpen = !!openGeos[key];
+              return (
+                <div key={geo} className="geo-block">
+                  <div className={`geo-row ${geoOpen ? "open" : ""}`} onClick={() => setOpenGeos((p) => ({ ...p, [key]: !p[key] }))}>
+                    <span className="tree-caret">{geoOpen ? "▾" : "▸"}</span>
+                    <span className="geo-icon">📡</span>
+                    <span className="geo-name">{geo}</span>
+                    <span className="geo-pill">{geoRows.length}</span>
+                  </div>
+                  {geoOpen && (
+                    <div className="branches-list">
+                      {geoRows.map((row, i) => <BranchCard key={i} row={row} />)}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────
+const distinct = (rows, key) =>
+  ["All", ...new Set(rows.map((r) => n(r[key] !== undefined ? r[key] : "")).filter(Boolean))];
+
+const distinctNum = (rows, key) =>
+  ["All", ...new Set(rows.map((r) => toStr(r[key])).filter(Boolean)).values()].sort((a, b) =>
+    a === "All" ? -1 : b === "All" ? 1 : Number(a) - Number(b)
+  );
+
+// ─────────────────────────────────────────────
+// MAIN APP
+// ─────────────────────────────────────────────
+export default function KnowYourDSA() {
+  // Raw data
+  const [masterRows, setMasterRows] = useState([]);   // Sheet 1 — all DSAs
+  const [piramalRaw, setPiramalRaw] = useState(null); // Sheet 2 — fixed ribbon data
+  const [joinedRows, setJoinedRows] = useState([]);   // Sheet 1 enriched with Sheet 2
+
+  // Sidebar filter state (all from Sheet 1 logic)
+  const [selDSA, setSelDSA] = useState("All");
+  const [selState, setSelState] = useState("All");
+  const [selCity, setSelCity] = useState("All");
+  const [selZone, setSelZone] = useState("All");
+  const [selGeo, setSelGeo] = useState("All");
+  const [selCluster, setSelCluster] = useState("All");
+  const [selBranchCode, setSelBranchCode] = useState("All");
+  const [selBranchName, setSelBranchName] = useState("All");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [drillState, setDrillState] = useState(null);
+
+  // ── File upload ──
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const wb = XLSX.read(ev.target.result, { type: "array" });
+
+      // Sheet 1 — Master
+      const ws1 = wb.Sheets[wb.SheetNames[0]];
+      const rows1 = XLSX.utils.sheet_to_json(ws1, { defval: "" });
+
+      // Sheet 2 — Piramal (fixed ribbon source)
+      const ws2 = wb.Sheets[wb.SheetNames[1]];
+      const rows2 = ws2 ? XLSX.utils.sheet_to_json(ws2, { defval: "" }) : [];
+
+      // Build Sheet 2 lookup keyed by Branch Code string
+      const s2map = {};
+      rows2.forEach((r) => {
+        const code = toStr(r["Branch Code"]);
+        if (code) s2map[code] = r;
+      });
+
+      // Enrich Sheet 1 rows with Sheet 2 activity/address data
+      const joined = rows1.map((r) => {
+        const code = toStr(r["Branch Code"]);
+        const s2 = s2map[code] || {};
+        // Sheet 1 fields win for people; Sheet 2 fills in activity + address
+        return {
+          ...r,
+          BRANCH_ADDRESS: n(s2.BRANCH_ADDRESS),
+          PINCODE: toStr(s2.PINCODE),
+          "MTD Jun'26 Login Active - Andromeda": n(s2["MTD Jun'26 Login Active - Andromeda"]),
+          "MTD Jun'26 Disbursal Active - Andromeda": n(s2["MTD Jun'26 Disbursal Active - Andromeda"]),
+        };
+      });
+
+      setMasterRows(rows1);
+      setPiramalRaw(rows2);
+      setJoinedRows(joined);
+      resetFilters();
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const resetFilters = () => {
+    setSelDSA("All"); setSelState("All"); setSelCity("All");
+    setSelZone("All"); setSelGeo("All"); setSelCluster("All");
+    setSelBranchCode("All"); setSelBranchName("All");
+    setSearchQuery(""); setDrillState(null);
+  };
+
+  // ── Base rows for sidebar/grid (always Sheet 1) ──
+  const base = joinedRows.length > 0 ? joinedRows : masterRows;
+
+  // ── Fixed ribbon metrics from Sheet 2 (never changes) ──
+  const ribbonMetrics = useMemo(() => {
+    const src = piramalRaw || [];
+    const total = src.length;
+    const loginActive = src.filter((r) => n(r["MTD Jun'26 Login Active - Andromeda"]).toLowerCase() === "active").length;
+    const disbActive = src.filter((r) => n(r["MTD Jun'26 Disbursal Active - Andromeda"]).toLowerCase() === "active").length;
+    const states = new Set(src.map((r) => n(r.STATE)).filter(Boolean)).size;
+    const zones = new Set(src.map((r) => n(r.ZONE_HL)).filter(Boolean)).size;
+    return { total, loginActive, disbActive, states, zones };
+  }, [piramalRaw]);
+
+  // ── Sidebar filter options (cascading, from Sheet 1) ──
+  const dsaOpts = useMemo(() => distinct(base, "DSA Name"), [base]);
+
+  const afterDSA = useMemo(() => selDSA === "All" ? base : base.filter((r) => n(r["DSA Name"]) === selDSA), [base, selDSA]);
+  const stateOpts = useMemo(() => distinct(afterDSA, "STATE"), [afterDSA]);
+
+  const afterState = useMemo(() => selState === "All" ? afterDSA : afterDSA.filter((r) => n(r.STATE) === selState), [afterDSA, selState]);
+  const cityOpts = useMemo(() => distinct(afterState, "CITY"), [afterState]);
+
+  const zoneOpts = useMemo(() => distinct(base, "ZONE_HL"), [base]);
+  const afterZone = useMemo(() => selZone === "All" ? base : base.filter((r) => n(r.ZONE_HL) === selZone), [base, selZone]);
+  const geoOpts = useMemo(() => distinct(afterZone, "GEO_HL"), [afterZone]);
+  const afterGeo = useMemo(() => selGeo === "All" ? afterZone : afterZone.filter((r) => n(r.GEO_HL) === selGeo), [afterZone, selGeo]);
+  const clusterOpts = useMemo(() => distinct(afterGeo, "CLUSTER_HL"), [afterGeo]);
+
+  const branchCodeOpts = useMemo(() => distinctNum(base, "Branch Code"), [base]);
+  const branchNameOpts = useMemo(() => distinct(base, "BRANCH_NAME"), [base]);
+
+  // ── Filtered rows for grid ──
+  const filtered = useMemo(() => {
+    return base.filter((r) => {
+      if (selDSA !== "All" && n(r["DSA Name"]) !== selDSA) return false;
+      if (selState !== "All" && n(r.STATE) !== selState) return false;
+      if (selCity !== "All" && n(r.CITY) !== selCity) return false;
+      if (selZone !== "All" && n(r.ZONE_HL) !== selZone) return false;
+      if (selGeo !== "All" && n(r.GEO_HL) !== selGeo) return false;
+      if (selCluster !== "All" && n(r.CLUSTER_HL) !== selCluster) return false;
+      if (selBranchCode !== "All" && toStr(r["Branch Code"]) !== selBranchCode) return false;
+      if (selBranchName !== "All" && n(r.BRANCH_NAME) !== selBranchName) return false;
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const blob = [
+          r["DSA Name"], r.STATE, r.CITY, r.BRANCH_NAME,
+          r["Branch Code"], r.ZONE_HL, r.GEO_HL, r.CLUSTER_HL,
+          r["Unit Head Name"], r["Manager Name"], r["Branch Manager Name"],
+          r["Unit Head Contact Number"], r["Manager Contact Number"], r["Branch Manager Contact Number"],
+          r.Address, r.BRANCH_ADDRESS,
+        ].map((v) => n(v)).join(" ").toLowerCase();
+        if (!blob.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [base, selDSA, selState, selCity, selZone, selGeo, selCluster, selBranchCode, selBranchName, searchQuery]);
+
+  // ── State map for grid ──
+  const stateMap = useMemo(() => {
+    const map = {};
+    filtered.forEach((r) => {
+      const s = n(r.STATE) || "Unknown";
+      if (!map[s]) map[s] = [];
+      map[s].push(r);
+    });
+    return map;
+  }, [filtered]);
+
+  const drillRows = drillState ? (stateMap[drillState] || []) : [];
+
+  const activeFilters = [selDSA, selState, selCity, selZone, selGeo, selCluster, selBranchCode, selBranchName]
+    .filter((v) => v !== "All").length + (searchQuery.trim() ? 1 : 0);
+
+  const noData = base.length === 0;
+
+  return (
+    <>
+      <style>{CSS}</style>
+      <div className="app">
+
+        {/* ── TOP BAR ── */}
+        <header className="topbar">
+          <div className="tb-left">
+            <div className="tb-brand">
+              <div className="tb-logo">◈</div>
+              <div>
+                <div className="tb-title">DSA <strong>Intelligence</strong></div>
+                <div className="tb-sub">Branch Network Dashboard</div>
+              </div>
+            </div>
+          </div>
+          <div className="tb-right">
+            {activeFilters > 0 && (
+              <button className="clear-btn" onClick={resetFilters}>
+                ✕ Clear {activeFilters} filter{activeFilters > 1 ? "s" : ""}
+              </button>
+            )}
+            <label className="upload-btn">
+              ⬆ Upload Excel
+              <input type="file" accept=".xlsx,.xls" onChange={handleFile} style={{ display: "none" }} />
+            </label>
+          </div>
+        </header>
+
+        {/* ── RIBBON — fixed Piramal data only ── */}
+        <div className="ribbon">
+          <div className="ribbon-group">
+            <div className="ribbon-eyebrow">Piramal Network — Fixed Overview</div>
+            <div className="ribbon-cells">
+              {[
+                { label: "Total Piramal Branches", val: noData ? "—" : ribbonMetrics.total, cls: "" },
+                { label: "Login Active", val: noData ? "—" : ribbonMetrics.loginActive, cls: "rv-green" },
+                { label: "Disbursal Active", val: noData ? "—" : ribbonMetrics.disbActive, cls: "rv-blue" },
+                { label: "States Covered", val: noData ? "—" : ribbonMetrics.states, cls: "rv-slate" },
+                { label: "HL Zones", val: noData ? "—" : ribbonMetrics.zones, cls: "rv-slate" },
+              ].map(({ label, val, cls }) => (
+                <div key={label} className="ribbon-cell">
+                  <div className="ribbon-label">{label}</div>
+                  <div className={`ribbon-val ${cls}`}>{val}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* ── BODY ── */}
+        <div className="body">
+
+          {/* ── SIDEBAR ── */}
+          <aside className="sidebar">
+            <div className="sb-search-wrap">
+              <span className="sb-search-icon">⌕</span>
+              <input
+                className="sb-search"
+                type="text"
+                placeholder="Search branch, manager, code…"
+                value={searchQuery}
+                onChange={(e) => { setSearchQuery(e.target.value); setDrillState(null); }}
+              />
+              {searchQuery && (
+                <span className="sb-search-clear" onClick={() => setSearchQuery("")}>✕</span>
+              )}
+            </div>
+
+            <div className="sb-section-label">Organisation</div>
+            <SearchableSelect label="DSA" value={selDSA} options={dsaOpts}
+              onChange={(v) => { setSelDSA(v); setSelState("All"); setSelCity("All"); setDrillState(null); }} />
+            <SearchableSelect label="State" value={selState} options={stateOpts}
+              onChange={(v) => { setSelState(v); setSelCity("All"); setDrillState(null); }} />
+            <SearchableSelect label="City" value={selCity} options={cityOpts}
+              onChange={(v) => { setSelCity(v); setDrillState(null); }} />
+
+            <div className="sb-section-label">HL Geography</div>
+            <SearchableSelect label="Zone" value={selZone} options={zoneOpts}
+              onChange={(v) => { setSelZone(v); setSelGeo("All"); setSelCluster("All"); setDrillState(null); }} />
+            <SearchableSelect label="Geo" value={selGeo} options={geoOpts}
+              onChange={(v) => { setSelGeo(v); setSelCluster("All"); setDrillState(null); }} />
+            <SearchableSelect label="Cluster" value={selCluster} options={clusterOpts}
+              onChange={(v) => { setSelCluster(v); setDrillState(null); }} />
+
+            <div className="sb-section-label">Branch</div>
+            <SearchableSelect label="Branch Code" value={selBranchCode} options={branchCodeOpts}
+              onChange={(v) => { setSelBranchCode(v); setDrillState(null); }} />
+            <SearchableSelect label="Branch Name" value={selBranchName} options={branchNameOpts}
+              onChange={(v) => { setSelBranchName(v); setDrillState(null); }} />
+
+            {activeFilters > 0 && (
+              <button className="sb-clear-btn" onClick={resetFilters}>
+                ✕ Clear all filters
+              </button>
+            )}
+          </aside>
+
+          {/* ── MAIN ── */}
+          <main className="main">
+            {noData && (
+              <div className="empty-state">
+                <div className="empty-icon">◎</div>
+                <div className="empty-title">No data loaded</div>
+                <div className="empty-sub">Upload an Excel file with Master Sheet and Piramal-info tabs to get started.</div>
+              </div>
+            )}
+
+            {!noData && filtered.length === 0 && (
+              <div className="empty-state">
+                <div className="empty-icon">◎</div>
+                <div className="empty-title">No branches match</div>
+                <div className="empty-sub">Adjust your filters or clear them to see all branches.</div>
+              </div>
+            )}
+
+            {!noData && filtered.length > 0 && !drillState && (
+              <>
+                <div className="grid-header">
+                  <span className="grid-count">{filtered.length} branches across {Object.keys(stateMap).length} states</span>
+                </div>
+                <div className="states-grid">
+                  {Object.entries(stateMap).sort((a, b) => a[0].localeCompare(b[0])).map(([state, rows]) => (
+                    <StateCard key={state} state={state} rows={rows} onClick={setDrillState} />
+                  ))}
+                </div>
+              </>
+            )}
+
+            {!noData && drillState && (
+              <DrillView state={drillState} rows={drillRows} onBack={() => setDrillState(null)} />
+            )}
+          </main>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────
+// CSS
+// ─────────────────────────────────────────────
+const CSS = `
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #F1F4F8; color: #1E2A3B; }
+
+  .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+  /* ── TOP BAR ── */
+  .topbar {
+    background: #1E2A3B; color: #fff;
+    padding: 0 24px; height: 58px;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+  }
+  .tb-left { display: flex; align-items: center; }
+  .tb-brand { display: flex; align-items: center; gap: 12px; }
+  .tb-logo { font-size: 22px; color: #4F8EF7; line-height: 1; }
+  .tb-title { font-size: 15px; color: #E2E8F0; letter-spacing: -0.2px; line-height: 1.2; }
+  .tb-title strong { color: #fff; font-weight: 700; }
+  .tb-sub { font-size: 10px; color: #64748B; text-transform: uppercase; letter-spacing: 0.8px; margin-top: 2px; }
+  .tb-right { display: flex; align-items: center; gap: 10px; }
+  .clear-btn {
+    background: #2D3748; border: 1px solid #4A5568; color: #CBD5E0;
+    padding: 6px 13px; border-radius: 6px; font-size: 12px; font-weight: 500;
+    cursor: pointer; transition: all .15s;
+  }
+  .clear-btn:hover { background: #374151; color: #fff; }
+  .upload-btn {
+    background: #4F8EF7; color: #fff; border: none;
+    padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600;
+    cursor: pointer; display: flex; align-items: center; gap: 7px;
+    transition: background .15s; letter-spacing: 0.1px;
+  }
+  .upload-btn:hover { background: #3B7CE8; }
+
+  /* ── RIBBON ── */
+  .ribbon {
+    background: #fff;
+    border-bottom: 1px solid #E2E8F0;
+    padding: 0 24px;
+    flex-shrink: 0;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .ribbon-group { padding: 10px 0 12px; }
+  .ribbon-eyebrow {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px;
+    color: #94A3B8; font-weight: 600; margin-bottom: 8px;
+    padding-bottom: 6px; border-bottom: 1px solid #F1F4F8;
+  }
+  .ribbon-cells { display: flex; align-items: flex-end; gap: 0; }
+  .ribbon-cell { padding-right: 32px; }
+  .ribbon-cell + .ribbon-cell { padding-left: 0; border-left: 1px solid #E8ECF0; padding-left: 32px; }
+  .ribbon-label { font-size: 11px; color: #64748B; font-weight: 500; margin-bottom: 2px; white-space: nowrap; }
+  .ribbon-val { font-size: 26px; font-weight: 800; color: #1E2A3B; line-height: 1; letter-spacing: -0.5px; }
+  .rv-green { color: #0D7A4E; }
+  .rv-blue  { color: #1A56DB; }
+  .rv-slate { color: #475569; }
+
+  /* ── BODY ── */
+  .body { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── SIDEBAR ── */
+  .sidebar {
+    width: 232px; background: #fff;
+    border-right: 1px solid #E2E8F0;
+    display: flex; flex-direction: column; gap: 2px;
+    overflow-y: auto; flex-shrink: 0;
+    padding: 14px 10px 20px;
+  }
+  .sb-search-wrap {
+    display: flex; align-items: center; gap: 7px;
+    background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 7px;
+    padding: 8px 10px; margin-bottom: 10px;
+  }
+  .sb-search-icon { color: #94A3B8; font-size: 15px; flex-shrink: 0; }
+  .sb-search { border: none; background: transparent; outline: none; font-size: 12px; color: #374151; width: 100%; }
+  .sb-search::placeholder { color: #94A3B8; }
+  .sb-search-clear { color: #94A3B8; cursor: pointer; font-size: 11px; flex-shrink: 0; }
+  .sb-search-clear:hover { color: #374151; }
+
+  .sb-section-label {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px;
+    color: #94A3B8; font-weight: 700; padding: 10px 4px 4px;
+  }
+  .sb-clear-btn {
+    margin-top: 12px; background: #FEF2F2; border: 1px solid #FECACA;
+    color: #B91C1C; padding: 8px; border-radius: 6px;
+    font-size: 12px; font-weight: 600; cursor: pointer; width: 100%;
+    transition: background .15s;
+  }
+  .sb-clear-btn:hover { background: #FEE2E2; }
+
+  /* ── SEARCHABLE SELECT ── */
+  .ssd { position: relative; margin-bottom: 2px; }
+  .ssd-label { font-size: 10px; color: #94A3B8; font-weight: 600; padding: 6px 4px 2px; letter-spacing: 0.3px; }
+  .ssd-trigger {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 7px 10px; border-radius: 6px; cursor: pointer;
+    background: #F8FAFC; border: 1px solid #E2E8F0;
+    transition: border-color .15s, background .15s; user-select: none;
+  }
+  .ssd-trigger:hover { border-color: #93C5FD; background: #EFF6FF; }
+  .ssd-trigger.open { border-color: #3B82F6; background: #EFF6FF; }
+  .ssd-val { font-size: 12px; color: #374151; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ssd-caret { font-size: 8px; color: #94A3B8; flex-shrink: 0; margin-left: 4px; }
+  .ssd-drop {
+    position: absolute; top: calc(100% + 3px); left: 0; right: 0;
+    background: #fff; border: 1px solid #E2E8F0; border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.12); z-index: 300; overflow: hidden;
+  }
+  .ssd-input {
+    width: 100%; border: none; border-bottom: 1px solid #F1F4F8;
+    padding: 8px 12px; font-size: 12px; color: #374151; outline: none;
+    background: #F8FAFC;
+  }
+  .ssd-list { max-height: 180px; overflow-y: auto; }
+  .ssd-item {
+    padding: 7px 12px; font-size: 12px; color: #374151; cursor: pointer;
+    display: flex; align-items: center; justify-content: space-between;
+    transition: background .1s;
+  }
+  .ssd-item:hover { background: #F0F7FF; }
+  .ssd-item.active { background: #EFF6FF; color: #1D4ED8; font-weight: 600; }
+  .ssd-tick { color: #1D4ED8; font-size: 11px; }
+  .ssd-none { padding: 10px 12px; font-size: 12px; color: #94A3B8; text-align: center; }
+
+  /* ── MAIN ── */
+  .main { flex: 1; overflow-y: auto; padding: 20px; }
+
+  .grid-header { margin-bottom: 14px; }
+  .grid-count { font-size: 12px; color: #64748B; font-weight: 500; }
+
+  /* ── EMPTY STATE ── */
+  .empty-state { text-align: center; padding: 80px 20px; }
+  .empty-icon { font-size: 40px; color: #CBD5E1; margin-bottom: 14px; }
+  .empty-title { font-size: 16px; font-weight: 700; color: #374151; margin-bottom: 6px; }
+  .empty-sub { font-size: 13px; color: #94A3B8; max-width: 320px; margin: 0 auto; line-height: 1.5; }
+
+  /* ── STATES GRID ── */
+  .states-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+    gap: 14px;
+  }
+
+  /* ── STATE CARD ── */
+  .state-card {
+    background: #fff; border: 1px solid #E2E8F0; border-radius: 10px;
+    padding: 18px; cursor: pointer;
+    transition: box-shadow .2s, border-color .2s, transform .15s;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .state-card:hover { box-shadow: 0 6px 20px rgba(79,142,247,0.12); border-color: #93C5FD; transform: translateY(-2px); }
+
+  .sc-head { display: flex; justify-content: space-between; align-items: flex-start; }
+  .sc-state { font-size: 15px; font-weight: 700; color: #1E2A3B; }
+  .sc-total { font-size: 24px; font-weight: 800; color: #1A56DB; line-height: 1; text-align: right; }
+  .sc-total span { display: block; font-size: 10px; font-weight: 400; color: #94A3B8; }
+
+  .sc-geo { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .sc-geo-cell {
+    display: flex; align-items: center; gap: 5px;
+    background: #F8FAFC; border: 1px solid #F1F4F8; border-radius: 6px;
+    padding: 6px 8px;
+  }
+  .sc-geo-icon { font-size: 11px; }
+  .sc-geo-label { font-size: 11px; color: #64748B; flex: 1; }
+  .sc-geo-num { font-size: 14px; font-weight: 700; color: #1E2A3B; }
+
+  .sc-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+  .sc-tag {
+    background: #EFF6FF; color: #1D4ED8; border: 1px solid #BFDBFE;
+    font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 20px;
+  }
+  .sc-tag-more { background: #F8FAFC; color: #64748B; border-color: #E2E8F0; }
+
+  .sc-dsa-row { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #F1F4F8; padding-top: 10px; }
+  .sc-dsa-label { font-size: 11px; color: #64748B; font-weight: 500; }
+  .sc-drill { font-size: 11px; color: #1A56DB; font-weight: 600; }
+
+  /* ── DRILL VIEW ── */
+  .drill { display: flex; flex-direction: column; gap: 8px; }
+  .drill-bar {
+    display: flex; align-items: center; gap: 12px;
+    background: #fff; border: 1px solid #E2E8F0; border-radius: 8px;
+    padding: 11px 16px; margin-bottom: 6px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  }
+  .back-btn {
+    background: #F8FAFC; border: 1px solid #E2E8F0; color: #374151;
+    padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    cursor: pointer; transition: background .15s; white-space: nowrap;
+  }
+  .back-btn:hover { background: #E2E8F0; }
+  .drill-state { font-size: 16px; font-weight: 700; color: #1E2A3B; flex: 1; }
+  .drill-pill {
+    background: #EFF6FF; color: #1D4ED8; border: 1px solid #BFDBFE;
+    font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px;
+  }
+
+  /* ── CITY / GEO TREE ── */
+  .city-block { margin-bottom: 6px; }
+  .city-row {
+    display: flex; align-items: center; gap: 8px;
+    background: #fff; border: 1px solid #E2E8F0; border-radius: 7px;
+    padding: 10px 14px; cursor: pointer; user-select: none;
+    font-size: 13px; font-weight: 600; color: #374151;
+    transition: all .15s; margin-bottom: 4px;
+  }
+  .city-row:hover { background: #F8FAFC; }
+  .city-row.open { border-color: #93C5FD; background: #EFF6FF; color: #1D4ED8; }
+  .tree-caret { font-size: 9px; color: #94A3B8; flex-shrink: 0; }
+  .city-icon, .geo-icon { font-size: 13px; flex-shrink: 0; }
+  .city-name, .geo-name { flex: 1; }
+  .city-pill, .geo-pill {
+    background: #F1F4F8; color: #64748B; border-radius: 20px;
+    font-size: 11px; font-weight: 600; padding: 2px 8px;
+  }
+
+  .geo-block { margin: 0 0 4px 20px; }
+  .geo-row {
+    display: flex; align-items: center; gap: 8px;
+    background: #FAFBFC; border: 1px solid #EEF1F5; border-radius: 6px;
+    padding: 8px 12px; cursor: pointer; user-select: none;
+    font-size: 12px; font-weight: 500; color: #4B5563;
+    transition: all .15s; margin-bottom: 4px;
+  }
+  .geo-row:hover { background: #F1F4F8; }
+  .geo-row.open { border-color: #93C5FD; background: #EFF6FF; color: #1D4ED8; }
+
+  /* ── BRANCHES LIST ── */
+  .branches-list { display: flex; flex-direction: column; gap: 10px; margin: 0 0 8px 20px; }
+
+  /* ── BRANCH CARD ── */
+  .branch-card {
+    background: #fff; border: 1px solid #E2E8F0;
+    border-radius: 8px; padding: 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  }
+  .bc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+  .bc-name { font-size: 14px; font-weight: 700; color: #1E2A3B; margin-bottom: 6px; }
+  .bc-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 4px; }
+  .chip-code { background: #F1F4F8; color: #475569; border: 1px solid #E2E8F0; }
+  .chip-zone { background: #EFF6FF; color: #1D4ED8; border: 1px solid #BFDBFE; }
+  .bc-status { display: flex; flex-direction: column; gap: 5px; align-items: flex-end; flex-shrink: 0; }
+  .bc-status-row { display: flex; align-items: center; gap: 5px; }
+  .bc-slabel { font-size: 10px; color: #94A3B8; font-weight: 500; }
+
+  .badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.3px; }
+  .b-active   { background: #DCFCE7; color: #166534; border: 1px solid #BBF7D0; }
+  .b-inactive { background: #FEE2E2; color: #991B1B; border: 1px solid #FECACA; }
+  .b-neutral  { background: #F1F4F8; color: #64748B; border: 1px solid #E2E8F0; }
+
+  .bc-section-title {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.7px;
+    color: #94A3B8; font-weight: 700; margin: 12px 0 7px;
+    padding-bottom: 5px; border-bottom: 1px solid #F1F4F8;
+  }
+
+  .geo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+  .geo-cell {
+    background: #F8FAFC; border: 1px solid #F1F4F8;
+    border-radius: 5px; padding: 6px 10px;
+    display: flex; flex-direction: column; gap: 1px;
+  }
+  .geo-key { font-size: 9px; color: #94A3B8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+  .geo-val { font-size: 12px; font-weight: 600; color: #374151; }
+
+  .bc-persons { display: flex; gap: 8px; flex-wrap: wrap; }
+  .person-card {
+    flex: 1; min-width: 140px; background: #F8FAFC;
+    border: 1px solid #EEF1F5; border-radius: 6px; padding: 10px 12px;
+  }
+  .person-role { font-size: 9px; text-transform: uppercase; letter-spacing: 0.6px; color: #94A3B8; font-weight: 700; margin-bottom: 3px; }
+  .person-name { font-size: 12px; font-weight: 600; color: #1E2A3B; margin-bottom: 4px; }
+  .person-link { display: block; font-size: 11px; color: #1A56DB; text-decoration: none; margin-top: 2px; }
+  .person-link:hover { text-decoration: underline; }
+
+  .bc-address {
+    display: flex; gap: 6px; align-items: flex-start;
+    font-size: 11px; color: #64748B; line-height: 1.5;
+    border-top: 1px solid #F1F4F8; padding-top: 10px; margin-top: 10px;
+  }
+
+  /* ── SCROLLBAR ── */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: #F1F4F8; }
+  ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+`;                            
